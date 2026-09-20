@@ -7,6 +7,17 @@ added in place, idempotently; deployed state files are never recreated.
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-09-21
+
+### Fixed
+- Disabling or reloading the plugin no longer hangs while a consume pass is in
+  flight. `shutdown()` acquired the pass lock *before* setting its stop flag,
+  so an unload that raced a pass waited for every Discord call that pass had
+  left — many tasks x a ten-second HTTP timeout each — with the running pass
+  never told to stop and the documented ten-second join unreachable. The stop
+  flag is now set first and the bounded join does the waiting; the loop still
+  rechecks it before each pass, so none begins after unload.
+
 ## [0.2.2] — 2026-09-20
 
 ### Fixed

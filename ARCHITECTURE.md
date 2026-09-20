@@ -246,6 +246,7 @@ Things a fresh reader would otherwise lose an hour to:
    heartbeat, not a `task_events` row, so the card shows it but the log does
    not. This is intentional: the card is state, the log is events.
 3. **`shutdown()` joins with a 10s timeout**: a startup/preflight or pass
-   blocked longer than that can outlive the unload. No new pass starts after
-   shutdown linearizes; the fencing token limits overlap if an in-flight pass
-   eventually returns (the successor is a different holder).
+   blocked longer than that can outlive the unload. Unload signals the stop
+   flag before it waits, so the bound holds and no new pass starts; the
+   fencing token limits overlap if an in-flight pass eventually returns (the
+   successor is a different holder).

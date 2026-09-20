@@ -195,6 +195,52 @@ def test_shutdown_during_build_does_not_start_a_consumer_pass():
     assert runtime.alive() is False
 
 
+def test_shutdown_signals_an_in_flight_pass_instead_of_waiting_for_it():
+    """Unload must be bounded even mid-pass, and the pass must be told to stop.
+
+    A consume pass occupies the thread for as long as its HTTP calls take —
+    many tasks x a ten-second timeout each. If shutdown waits on that pass
+    before setting the stop flag, the documented ten-second join is
+    unreachable and the running pass never learns it should be the last one,
+    so disabling or reloading the plugin hangs for an arbitrary time.
+    """
+    pass_started = threading.Event()
+    stop_seen_by_pass = threading.Event()
+    release_pass = threading.Event()
+
+    class BlockingConsumer:
+        def __init__(self):
+            self.runs = 0
+
+        def run_once(self, now=None):
+            from kanban_task_threads.consumer import Report
+
+            self.runs += 1
+            pass_started.set()
+            # Stand in for a slow Discord call: the pass only returns once the
+            # test frees it, and reports whether it was signalled meanwhile.
+            if release_pass.wait(timeout=5) and runtime._stopping.is_set():
+                stop_seen_by_pass.set()
+            return Report()
+
+    consumer = BlockingConsumer()
+    runtime = Runtime(CountingBuild(consumer), poll_seconds=0.01)
+    runtime.start()
+    assert pass_started.wait(timeout=2), "the consumer pass never started"
+
+    shutdown = threading.Thread(target=runtime.shutdown)
+    shutdown.start()
+    assert wait_for(runtime._stopping.is_set, timeout=1), (
+        "shutdown blocked on the in-flight pass before signalling it to stop"
+    )
+
+    release_pass.set()
+    shutdown.join(timeout=11)
+    assert not shutdown.is_alive(), "shutdown did not return within its join timeout"
+    assert stop_seen_by_pass.is_set(), "the in-flight pass was never told to stop"
+    assert runtime.alive() is False
+
+
 def deferring_build(outcomes, calls):
     def build():
         calls.append(1)

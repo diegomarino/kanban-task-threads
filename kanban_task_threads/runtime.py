@@ -63,9 +63,6 @@ class Runtime:
         self._kicked = threading.Event()
         self._stopping = threading.Event()
         self._lock = threading.Lock()
-        # Linearizes consumer passes with shutdown: once shutdown acquires this
-        # lock and sets the stop flag, no later pass can begin.
-        self._pass_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._context = None  # latest kick's contextvars snapshot, until built
         self._built = False
@@ -119,13 +116,16 @@ class Runtime:
     def shutdown(self) -> None:
         """Stop the loop and wait up to ten seconds for the thread. Idempotent.
 
-        No new consumer pass can begin after shutdown linearizes on
-        ``_pass_lock``. A build or pass already blocked longer than the join
-        timeout may finish later; consumer leases fence any successor.
+        Signalling comes first and is never behind a lock: a consume pass can
+        hold the thread for as long as its HTTP calls take, so blocking on it
+        before setting the flag would both hide the stop from the running pass
+        and put the ten-second bound out of reach. The loop rechecks the flag
+        before each pass, so none begins after this returns; a build or pass
+        already blocked longer than the join timeout may finish later, and
+        consumer leases fence any successor.
         """
-        with self._pass_lock:
-            self._stopping.set()
-            self._kicked.set()
+        self._stopping.set()
+        self._kicked.set()
         with self._lock:
             thread = self._thread
         if thread is not None:
@@ -194,14 +194,13 @@ class Runtime:
                     continue  # deferred — try again next interval, or next kick
                 if self._stopping.is_set():
                     break  # unload began while the build/preflight was in flight
-            with self._pass_lock:
-                if self._stopping.is_set():
-                    break
-                try:
-                    report = consumer.run_once()
-                    for line in report.errors:
-                        self._log.error("kanban-task-threads: %s", line)
-                    for line in getattr(report, "warnings", ()):
-                        self._log.warning("kanban-task-threads: %s", line)
-                except Exception:
-                    self._log.exception("kanban-task-threads: consume pass failed; will retry")
+            if self._stopping.is_set():
+                break  # the last gate before a pass: unload began, do not start one
+            try:
+                report = consumer.run_once()
+                for line in report.errors:
+                    self._log.error("kanban-task-threads: %s", line)
+                for line in getattr(report, "warnings", ()):
+                    self._log.warning("kanban-task-threads: %s", line)
+            except Exception:
+                self._log.exception("kanban-task-threads: consume pass failed; will retry")
