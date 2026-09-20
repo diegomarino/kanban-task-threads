@@ -1,0 +1,259 @@
+"""The transport seam (ADR-0004) and its Discord implementation (ADR-0003, ADR-0007).
+
+The seam is small on purpose: `open_thread`, `edit_card`, `append`, plus a
+capability declaration the renderer can ask about instead of assuming a common
+subset. `set_title` and `archive` are bot-token extras and arrive with the
+bot path (ADR-0003) — the capability constants already name them.
+
+Hard rules from ADR-0007, enforced here so no caller can forget them:
+- `allowed_mentions: {"parse": []}` on every single call. Titles and reasons
+  are arbitrary agent output; webhook content parses mentions by default.
+- Deterministic truncation to Discord's limits before sending.
+"""
+
+import json
+import urllib.request
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Protocol
+
+from .render import CONTENT_LIMIT, THREAD_TITLE_LIMIT, Card, truncate
+
+CAP_RICH_CARD = "rich_card"
+CAP_LIVE_TIMESTAMPS = "live_timestamps"
+CAP_PER_MESSAGE_IDENTITY = "per_message_identity"
+CAP_TITLE_STATE = "title_state"
+CAP_TAGS = "tags"
+
+EMBED_TITLE_LIMIT = 256
+EMBED_DESCRIPTION_LIMIT = 4096
+
+# Not configurable (ADR-0006): correctness, not taste.
+_NO_MENTIONS = {"parse": []}
+
+# The http seam: http(method, url, json_body_or_None, headers=None)
+#   -> (status, decoded_body)
+Http = Callable[..., tuple[int, dict]]
+
+
+@dataclass(frozen=True)
+class ThreadRef:
+    """A forum post: the starter message and the thread it opened.
+
+    On Discord the post id *is* the thread id; both are kept because the
+    edit endpoint addresses the message while the reply endpoint addresses
+    the thread.
+    """
+
+    thread_id: str
+    message_id: str
+
+
+class TransportError(RuntimeError):
+    """A non-2xx transport response; `status` and decoded `body` drive the
+    failure policy (ADR-0007)."""
+
+    def __init__(self, status: int, body: dict):
+        super().__init__(f"transport call failed: HTTP {status} {body!r}")
+        self.status = status
+        self.body = body
+
+
+class Transport(Protocol):
+    """The ADR-0004 seam. `capabilities()` declares what this transport can do
+    (`rich_card`, `live_timestamps`, `per_message_identity`, `title_state`,
+    `tags`); callers gate on it instead of assuming a common subset.
+    `open_thread` returns the new thread's ref, `edit_card` rewrites the
+    starter in place, `append` posts one reply and returns its message id."""
+
+    def capabilities(self) -> frozenset: ...
+    def open_thread(self, *, title: str, card: Card) -> ThreadRef: ...
+    def edit_card(self, ref: ThreadRef, card: Card) -> None: ...
+    def append(self, ref: ThreadRef, *, content: str, username: str | None = None) -> str: ...
+
+
+class DiscordTransport:
+    """Webhook-first (ADR-0003: write-only, bound to one channel). A bot token is a
+    separate, optional capability — detected, never required (ADR-0003)."""
+
+    def __init__(
+        self,
+        http: Http,
+        webhook_url: str,
+        *,
+        bot_token: str | None = None,
+        applied_tag_ids: Sequence[str] = (),
+        forum_channel_id: str | None = None,
+    ):
+        self._http = http
+        self._webhook_url = webhook_url.rstrip("/")
+        self._bot_token = bot_token
+        self._applied_tag_ids = list(applied_tag_ids)
+        self._forum_channel_id = forum_channel_id
+        self._tag_ids_by_name: dict | None = None  # fetched once, cached
+
+    def capabilities(self) -> frozenset:
+        caps = {CAP_RICH_CARD, CAP_LIVE_TIMESTAMPS, CAP_PER_MESSAGE_IDENTITY}
+        if self._bot_token:
+            caps |= {CAP_TITLE_STATE, CAP_TAGS}
+        return frozenset(caps)
+
+    def open_thread(self, *, title: str, card: Card) -> ThreadRef:
+        body = {
+            "thread_name": truncate(title, THREAD_TITLE_LIMIT),
+            # content: the forum-list preview renders it; embeds show as
+            # "Click to see attachment" there
+            "content": card.summary,
+            "embeds": [self._embed(card)],
+            "allowed_mentions": _NO_MENTIONS,
+        }
+        if self._applied_tag_ids:
+            body["applied_tags"] = self._applied_tag_ids
+        message = self._call("POST", f"{self._webhook_url}?wait=true", body)
+        return ThreadRef(thread_id=str(message["channel_id"]), message_id=str(message["id"]))
+
+    def edit_card(self, ref: ThreadRef, card: Card) -> None:
+        self._call(
+            "PATCH",
+            f"{self._webhook_url}/messages/{ref.message_id}?thread_id={ref.thread_id}",
+            {
+                "content": card.summary,
+                "embeds": [self._embed(card)],
+                "allowed_mentions": _NO_MENTIONS,
+            },
+        )
+
+    def append(self, ref: ThreadRef, *, content: str, username: str | None = None) -> str:
+        body = {
+            "content": truncate(content, CONTENT_LIMIT),
+            "allowed_mentions": _NO_MENTIONS,
+        }
+        if username:
+            body["username"] = username
+        message = self._call(
+            "POST", f"{self._webhook_url}?wait=true&thread_id={ref.thread_id}", body
+        )
+        return str(message["id"])
+
+    # --- bot-token extras (ADR-0003): capability-gated, the webhook cannot do these --
+
+    def set_status_tag(self, ref: ThreadRef, name: str) -> bool:
+        """Apply the forum tag with this *name* to the thread (replacing any).
+        Names are resolved against the forum's own tag list, fetched once —
+        installers manage tags by name, ids stay Discord's business. Unknown
+        name: no-op returning False (a forum without the convention's tags is
+        degraded, not broken)."""
+        tag_id = self._forum_tag_ids().get(name)
+        if tag_id is None:
+            return False
+        self._bot_patch_thread(ref, {"applied_tags": [tag_id]})
+        return True
+
+    def clear_status_tag(self, ref: ThreadRef) -> None:
+        """Back to the creation default: the configured applied_tag_ids (so a
+        tag-required forum stays satisfied), or no tags at all."""
+        self._bot_patch_thread(ref, {"applied_tags": list(self._applied_tag_ids)})
+
+    def rename(self, ref: ThreadRef, name: str) -> None:
+        self._bot_patch_thread(ref, {"name": name})
+
+    def set_archived(self, ref: ThreadRef, archived: bool) -> None:
+        self._bot_patch_thread(ref, {"archived": archived})
+
+    def _forum_tag_ids(self) -> dict:
+        if self._tag_ids_by_name is None:
+            channel = self._call(
+                "GET",
+                f"https://discord.com/api/v10/channels/{self._require_forum()}",
+                None,
+                headers=self._bot_headers(),
+            )
+            self._tag_ids_by_name = {
+                tag.get("name"): str(tag.get("id")) for tag in channel.get("available_tags", [])
+            }
+        return self._tag_ids_by_name
+
+    def _bot_patch_thread(self, ref: ThreadRef, body: dict) -> None:
+        self._call(
+            "PATCH",
+            f"https://discord.com/api/v10/channels/{ref.thread_id}",
+            body,
+            headers=self._bot_headers(),
+        )
+
+    def _bot_headers(self) -> dict:
+        if not self._bot_token:
+            raise RuntimeError("bot operation without a bot token — gate on capabilities()")
+        return {"Authorization": f"Bot {self._bot_token}"}
+
+    def _require_forum(self) -> str:
+        if not self._forum_channel_id:
+            raise RuntimeError("forum_channel_id not set — pass it at construction")
+        return self._forum_channel_id
+
+    # --- preflight -----------------------------------------------------------
+
+    def webhook_info(self) -> dict:
+        """ADR-0003: one credential, one source of truth. The webhook object's
+        `channel_id` is the forum it publishes to — asked, never configured."""
+        return self._call("GET", self._webhook_url, None)
+
+    def forum_requires_tag(self, channel_id: str) -> bool | None:
+        """flags & 16 means every new post 400s without applied_tags (ADR-0007).
+        The channel API needs a bot token; without one the answer is unknown
+        (None) and the 400 on the first create is mapped instead."""
+        if not self._bot_token:
+            return None
+        channel = self._call(
+            "GET",
+            f"https://discord.com/api/v10/channels/{channel_id}",
+            None,
+            headers={"Authorization": f"Bot {self._bot_token}"},
+        )
+        return bool(channel.get("flags", 0) & 16)
+
+    def _embed(self, card: Card) -> dict:
+        return {
+            "title": truncate(card.title, EMBED_TITLE_LIMIT),
+            "description": truncate(card.description, EMBED_DESCRIPTION_LIMIT),
+            "color": card.color,
+        }
+
+    def _call(self, method: str, url: str, body: dict | None, headers: dict | None = None) -> dict:
+        status, response = (
+            self._http(method, url, body, headers=headers)
+            if headers
+            else self._http(method, url, body)
+        )
+        if not 200 <= status < 300:
+            raise TransportError(status, response)
+        return response
+
+
+# Discord fronts with Cloudflare, which 403s (error code 1010) urllib's
+# default User-Agent. Any identifying UA passes; the default is banned.
+_USER_AGENT = "kanban-task-threads/0.2.0 (Hermes plugin)"
+
+
+def urllib_http(
+    method: str, url: str, body: dict | None, timeout: float = 10.0, headers: dict | None = None
+) -> tuple[int, dict]:
+    """The real client behind the seam. Tests reach it only with urlopen faked."""
+    data = json.dumps(body).encode() if body is not None else None
+    all_headers = {"User-Agent": _USER_AGENT}
+    if data:
+        all_headers["Content-Type"] = "application/json"
+    if headers:
+        all_headers.update(headers)
+    request = urllib.request.Request(url, data=data, method=method, headers=all_headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            raw = resp.read()
+            return resp.status, json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as err:
+        raw = err.read()
+        try:
+            decoded = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            decoded = {"raw": raw.decode(errors="replace")}
+        return err.code, decoded

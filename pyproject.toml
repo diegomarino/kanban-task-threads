@@ -1,0 +1,26 @@
+# Tooling metadata only — this is a Hermes plugin, not an installable Python
+# package (the manifest is plugin.yaml). Conventions mirror the installed
+# Hermes source: double quotes, PEP 604 unions, ~100-column lines.
+
+[project]
+name = "kanban-task-threads"
+version = "0.2.0"
+requires-python = ">=3.11,<3.14"  # Hermes's own bound: test what runs
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import order
+    "UP",       # pyupgrade — keeps typing in the same era as Hermes itself
+    "B",        # bugbear
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests import from conftest via sys.path and group by scenario, not by module.
+"tests/*" = ["E402"]
+"scripts/*" = ["E402"]

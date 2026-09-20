@@ -1,0 +1,80 @@
+# kanban-task-threads — a live status card per kanban task, in a thread of its own.
+#
+# manifest_version stays at 1: the loader accepts 2 but the installer refuses
+# it, so `hermes plugins install` would abort.
+name: kanban-task-threads
+version: 0.2.0
+description: >-
+  Every kanban task gets a forum thread of its own: the first post is a live
+  status card rewritten in place, the replies are the append-only log.
+  Discord is the first transport.
+author: diego
+license: MIT
+homepage: https://github.com/diegomarino/kanban-task-threads
+kind: standalone
+manifest_version: 1
+
+requires_hermes: ">=0.20"
+tags: [discord, kanban, notifications, visibility]
+
+# Not a load gate: the plugin checks its own configuration at
+# startup and degrades to a no-op. Declared here so installers know what to set.
+requires_env:
+  - name: KANBAN_TASK_THREADS_WEBHOOK_URL
+    description: Discord webhook bound to the forum channel the cards publish to
+    secret: true
+optional_env:
+  - name: KANBAN_TASK_THREADS_BOT_TOKEN
+    description: Bot token with MANAGE_THREADS on that forum; unlocks status tags, renames, archiving
+    secret: true
+
+# Exactly the hooks register() registers — `plugins validate` fails on a
+# registered-but-undeclared hook. Every one is the same "poll now" kick (ADR-0002);
+# correctness lives in the durable task_events cursor, not here.
+provides_hooks:
+  - kanban_task_claimed
+  - kanban_task_completed
+  - kanban_task_blocked
+  - on_kanban_task_updated
+  - on_kanban_worker_spawned
+  - on_kanban_worker_exited
+  - on_kanban_worker_stale_claim
+  - on_kanban_dispatch_tick
+
+config_schema:
+  board:
+    type: str
+    default: ""
+    description: Board this instance serves. Empty means the current board.
+  reply_on:
+    type: list
+    description: Event kinds that earn a reply in the thread.
+  include_workspace_path:
+    type: bool
+    default: false
+    description: Publish the absolute workspace path on the card. Off by default (ADR-0011).
+  discord_applied_tag_ids:
+    type: list
+    description: Forum tag ids applied to new posts. Required if the forum enforces tags.
+  poll_seconds:
+    type: int
+    default: 20
+    description: Seconds between consumer passes when no hook kicks arrive.
+  stale_after_seconds:
+    type: int
+    default: 600
+    description: Heartbeat age after which a running task renders as stale.
+  dashboard_url:
+    type: str
+    default: ""
+    description: Task page URL; {task_id} and {board} placeholders. Use a stable name, never an IP — published links are frozen forever.
+  comment_excerpt_chars:
+    type: int
+    default: 180
+    description: Maximum comment characters published in replies. Set to 0 for author-only replies.
+  card_template:
+    type: str
+    description: Card body template. Falls back to the built-in on any error.
+  reply_templates:
+    type: dict
+    description: Per-event-kind reply templates. Same fallback rule.

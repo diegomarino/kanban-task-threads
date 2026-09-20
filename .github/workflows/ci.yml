@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          check-latest: false
+      - name: Install pinned quality tools
+        run: python -m pip install pytest==9.1.1 ruff==0.16.8
+      - name: Ruff check
+        run: ruff check .
+      - name: Ruff format check
+        run: ruff format --check .
+      - name: Unit tests
+        run: python -m pytest tests/
+
+  hermes-validate:
+    name: Hermes plugin validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+          check-latest: false
+      - name: Install pinned Hermes
+        run: >-
+          python -m pip install
+          git+https://github.com/NousResearch/hermes-agent.git@345cd2b057a452236de401d3534b8502a7465e8d
+      - name: Validate plugin contract
+        env:
+          HERMES_HOME: ${{ runner.temp }}/hermes-home
+          HERMES_KANBAN_HOME: ${{ runner.temp }}/hermes-home
+          OP_LOAD_DESKTOP_APP_SETTINGS: "false"
+          OP_BIOMETRIC_UNLOCK_ENABLED: "false"
+        run: hermes plugins validate . --json
+
+  plugin-scanner:
+    name: HOL plugin scanner
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Scan public plugin tree
+        uses: hashgraph-online/ai-plugin-scanner-action@15c88627e5d1bced0f9b1ca162e449b421438558 # v1.2.692
+        with:
+          plugin_dir: "."
+          mode: scan
+          profile: public-marketplace
+          format: sarif
+          output: plugin-scanner.sarif
+          min_score: 80
+          fail_on_severity: high
+          upload_sarif: false
+      - name: Upload scanner SARIF
+        if: ${{ always() && hashFiles('plugin-scanner.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          sarif_file: plugin-scanner.sarif
+          category: ai-plugin-scanner
