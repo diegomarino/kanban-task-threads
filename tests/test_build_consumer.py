@@ -1,6 +1,6 @@
-"""Startup classification (ADR-0003): a missing profile scope or a
-Discord blip is RetryableStartup (retry on a later kick); a genuinely absent
-secret or a rejected webhook is a config verdict (None, permanent no-op)."""
+"""Startup classification (ADR-0003): a missing profile scope or a Discord
+blip is RetryableStartup (interval retry, sooner on a kick); a genuinely absent
+secret or rejected webhook is a config verdict (None, permanent no-op)."""
 
 import sys
 import types

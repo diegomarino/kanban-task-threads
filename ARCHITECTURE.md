@@ -8,10 +8,10 @@ listed at the end — read them before trusting this document's guarantees.
 
 ```mermaid
 flowchart TB
-    hooks["Hermes hooks — 8 kanban kicks<br/>(register(ctx): registration ONLY,<br/>probed by validate with a stub context)"]
+    hooks["Hermes hooks — 8 kanban kicks<br/>(register(ctx): hooks · unload · deferred start,<br/>probed by validate with a stub context)"]
     entry["__init__.py<br/>ctx.on_unload(runtime.shutdown) — the teardown contract"]
-    runtime["runtime.Runtime<br/>one daemon thread · lazy build · poll + kick loop"]
-    build["_build_consumer (once, in the first usable kick's<br/>contextvars snapshot): secrets · preflight · paths"]
+    runtime["runtime.Runtime<br/>one daemon thread, started by register()<br/>waits one interval, then builds · poll + kick loop"]
+    build["_build_consumer (each startup attempt until built,<br/>in the registered profile context): secrets · preflight · paths"]
 
     subgraph boarddb["board DB (read-only)"]
         tasks[(tasks)]
@@ -58,8 +58,8 @@ stateDiagram-v2
 
 | Module | Responsibility | Decision |
 |---|---|---|
-| `__init__.py` (root) | `register(ctx)`: registers the 8 kanban hooks as kicks plus the unload callback, and nothing else — the validate probe runs it against a stub context. `_build_consumer` is the lazy startup: secrets, preflight, paths, degrade-to-no-op. | ADR-0002, ADR-0003 |
-| `kanban_task_threads/runtime.py` | One daemon thread between hooks and consumer: lazy start on first kick, poll interval as fallback for hook-less events, `shutdown()` joins the thread. | ADR-0002 |
+| `__init__.py` (root) | `register(ctx)`: registers the 8 kanban hooks as kicks, the unload callback, and `runtime.start()` — no I/O of its own, since the thread sleeps before it builds. `_build_consumer` is the deferred startup: secrets, preflight, paths, degrade-to-no-op. | ADR-0002, ADR-0003, ADR-0013 |
+| `kanban_task_threads/runtime.py` | One daemon thread between hooks and consumer: started at register time so every profile is a lease candidate, waits one interval before its first build, poll interval as fallback for hook-less events, `shutdown()` joins the thread. | ADR-0002, ADR-0013 |
 | `kanban_task_threads/view.py` | Task row → flat dict of strings. Computes `stale`; gates `workspace_path` behind opt-in. | ADR-0001, ADR-0011 |
 | `kanban_task_threads/render.py` | View → `Card`; event payload → reply text. Status vocabulary, deterministic truncation, default templates. | ADR-0001, ADR-0006 |
 | `kanban_task_threads/templates.py` | `format_map` over flat scalars via a Formatter that rejects `.`/`[`/positional fields; fallback to trusted defaults. | ADR-0006 |
@@ -71,24 +71,32 @@ Everything under `kanban_task_threads/` is stdlib-only and Hermes-free: tests
 import it directly, the sandbox drives it with a console transport, and the
 Hermes entry point is a thin adapter on top. The Hermes imports
 (`agent.secret_scope`, `hermes_cli.kanban_db`) happen only inside
-`_build_consumer`, in the runtime thread, on the first kick.
+`_build_consumer`, in the runtime thread, after its initial wait or sooner when
+a hook kick collapses that wait.
 
 ## Startup, degradation, teardown
 
-- **`register()` is inert.** `hermes plugins validate` probes it in a
-  subprocess whose stub context returns `None` for most attributes — any real
-  work there fails the catalog gate. Hence the `callable()` guard around
-  `ctx.on_unload`.
-- **First kick** captures `contextvars.copy_context()` and starts the thread;
-  the build runs inside that snapshot because a ContextVar secret scope does
-  not cross an unbound thread (ADR-0003). Secrets: `KANBAN_TASK_THREADS_WEBHOOK_URL`
+- **`register()` does no I/O.** `hermes plugins validate` probes it in a
+  subprocess whose stub context answers *every* attribute with a no-op — the
+  probe cannot be detected, so it is outlived instead: `runtime.start()` spawns
+  a thread that waits a full poll interval before touching anything, and the
+  probe exits in milliseconds (ADR-0013). The `callable()` guard around
+  `ctx.on_unload` stays for contexts that omit it entirely.
+- **`start()` makes this profile a lease candidate**, without waiting for a
+  hook that may never fire here (ADR-0013). It captures
+  `contextvars.copy_context()`; before each build the profile's current secret
+  scope is reconstructed with the registered home pinned because ContextVars
+  do not cross an unbound thread (ADR-0003). Empty dispatcher kicks cannot
+  redirect the runtime to another profile; non-identity ContextVars still come
+  from the latest attempt.
+  Secrets: `KANBAN_TASK_THREADS_WEBHOOK_URL`
   (required; in production an `op://` reference resolved by the profile env,
   never a literal) and `KANBAN_TASK_THREADS_BOT_TOKEN` (optional, ADR-0003 extras).
-- **Degrade to no-op**: missing webhook, failed preflight, or Hermes not
-  importable → one log line and the thread exits. The build runs once; a dead
-  config is not re-probed on every kick, and reconfiguration requires a plugin
-  reload. (See Known limitations: this currently also swallows *transient*
-  build failures.)
+- **Startup classification**: a real config verdict (missing webhook in a
+  populated scope, rejected credential, impossible tag policy, or Hermes not
+  importable) logs once and exits until reload. A transient preflight or
+  missing scope raises `RetryableStartup`; the thread refreshes the profile
+  scope and retries each interval, sooner on a kick.
 - **Preflight asymmetry**: the forum channel is asked, never configured —
   `GET` on the webhook returns its `channel_id` (ADR-0003: one credential, one
   source of truth). With a bot token the tag requirement (`flags & 16`) is
@@ -237,6 +245,7 @@ Things a fresh reader would otherwise lose an hour to:
 2. **`stale` never earns a reply** — it is a render-time computation from the
    heartbeat, not a `task_events` row, so the card shows it but the log does
    not. This is intentional: the card is state, the log is events.
-3. **`shutdown()` joins with a 10s timeout**: a pass blocked longer than that
-   in a Discord call can outlive the unload by up to one call's timeout. The
-   fencing token limits the damage (the successor is a different holder).
+3. **`shutdown()` joins with a 10s timeout**: a startup/preflight or pass
+   blocked longer than that can outlive the unload. No new pass starts after
+   shutdown linearizes; the fencing token limits overlap if an in-flight pass
+   eventually returns (the successor is a different holder).

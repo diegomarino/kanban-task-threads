@@ -26,3 +26,4 @@ even when it supersedes an old one.
 | [0010](0010-single-forum-default.md) | One webhook, one forum, zero config — multi-forum routing parked |
 | [0011](0011-egress-allowlist.md) | The view is an egress allowlist; absence is the safe default |
 | [0012](0012-task-links-are-prerequisites.md) | `task_links` are prerequisites, not a hierarchy — the hub follows the real arrows |
+| [0013](0013-every-profile-is-a-candidate.md) | Every profile that loads the plugin is a lease candidate; the thread waits before it builds |

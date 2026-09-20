@@ -1,15 +1,26 @@
-# Configuration, secrets, and the lazy startup
+# Configuration, secrets, and the deferred startup
 
-## Why `register()` does nothing
+## Why `register()` does no I/O
 
 Hermes probes a plugin's `register()` in two hostile contexts: the catalog
 gate (`hermes plugins validate`) runs it in a subprocess against a **stub
-context** whose attributes are mostly `None`-returning no-ops, and `plugins
-doctor` loads it in a temporary home with **sockets blocked**. So `register()`
-only registers: the eight kanban hooks (all mapped to the same cheap kick) and
-the unload callback. Anything real — opening a DB, resolving a secret,
-touching the network — happens lazily, on the first hook kick, in the
-runtime's own thread.
+context** whose attributes are no-ops, and `plugins doctor` loads it in a
+temporary home with **sockets blocked**. So `register()` only registers: the
+eight kanban hooks (all mapped to the same cheap kick), the unload callback,
+and `runtime.start()`. Anything real — opening a DB, resolving a secret,
+touching the network — happens in the runtime's own thread.
+
+`start()` spawns that thread but the thread **sleeps one poll interval before
+its first build** (ADR-0013). That is what keeps `register()` honest without
+trying to detect the probe: the stub context answers *every* attribute with a
+no-op, including `on_unload`, so no attribute test can tell a probe from a real
+runtime. The probe is outlived instead — it exits in milliseconds. A hook kick
+collapses the wait, so nothing is slower where hooks do fire.
+
+Starting here rather than on the first kick is what makes every profile a lease
+candidate. Kanban hooks fire only in the process holding Hermes' singleton
+dispatcher lock, so a kick-only start would elect the publisher by gateway boot
+order and leave the `consume:<board>` lease with nobody to fail over to.
 
 The unload callback is load-bearing, not politeness:
 `discover_plugins(force=True)` re-imports the module and `hermes plugins
@@ -33,13 +44,21 @@ deliberately *not* prefixed
 bypass profile scoping.
 
 **The contextvars subtlety:** a `ContextVar`-based secret scope does not cross
-an unbound thread. Every kick therefore captures
-`contextvars.copy_context()`, and the build runs inside the captured snapshot.
+an unbound thread. `start()` and every kick therefore capture
+`contextvars.copy_context()`. Before every build attempt the runtime copies
+that registration context and rebuilds the captured profile's secret scope.
+Direct profile-file changes and previously failed external-source hydration
+are retried on the next interval; successfully hydrated external snapshots
+retain Hermes' own cache invalidation and reload semantics. The profile
+identity stays pinned to `register()` even when the dispatcher supplies an
+intentionally empty context; other ContextVars still come from the latest
+startup attempt.
 One caller is special: the gateway's embedded dispatcher runs its tick in a
 deliberately **empty** `Context()`, so a kick from `on_kanban_dispatch_tick`
 may carry no secret scope at all. That case is classified as *retryable* — the
-thread dies without disabling anything and the next kick (with a richer
-context) rebuilds — never as "unconfigured".
+thread keeps running and rebuilds its registered profile scope on the next
+interval — never as "unconfigured". A kick can accelerate that attempt but
+cannot redirect it to another profile.
 
 ## Startup classification: transient vs config verdict
 
@@ -49,7 +68,7 @@ The build runs once per attempt and ends in one of three ways:
 |---|---|---|
 | a `Consumer` | configured and preflighted | the loop starts |
 | `None` | a **config verdict**: secret present-but-empty in a real scope, Discord rejected the webhook (401/404), tag-required forum with no tags configured, Hermes not importable | permanent no-op until a plugin reload; logged once |
-| `RetryableStartup` | a reason that may heal: no secret scope in this kick's context, a 5xx/429 from the preflight, any network error | the thread dies *undisabled*; the next kick retries with its own fresh context |
+| `RetryableStartup` | a reason that may heal: no secret scope in this context, a 5xx/429 from the preflight, any network error | the thread stays alive, refreshes its registered profile scope, and retries every interval (sooner on a kick); warned once per distinct reason, then DEBUG |
 
 The distinction is the point: a DNS blip or an unlucky first kick must not
 require a gateway restart, and a genuinely dead config must not be re-probed
