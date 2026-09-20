@@ -24,10 +24,11 @@ sessions from a module nobody can reach anymore.
 - `KANBAN_TASK_THREADS_BOT_TOKEN` — optional; unlocks the `title_state`/`tags`
   capabilities and the real tag preflight.
 
-Both are read through `agent.secret_scope.get_secret` — never `os.environ`
-directly — so they resolve per profile. Ship them through your secret manager
-as references (e.g. 1Password `op://…`) resolved by the profile environment;
-never a literal in config. The names are deliberately *not* prefixed
+Both are resolved through Hermes' profile-aware secret scope rather than read
+directly from the process environment, so they resolve per profile. Ship them
+through your secret manager as references (e.g. 1Password `op://…`) resolved
+by the profile environment; never a literal in config. The names are
+deliberately *not* prefixed
 `HERMES_KANBAN_`: that prefix is treated as process-global by Hermes and would
 bypass profile scoping.
 

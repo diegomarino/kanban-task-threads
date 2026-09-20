@@ -28,9 +28,22 @@ freeze the first one forever (see [docs/transport.md](docs/transport.md)).
 
 ## Install
 
+Until the catalog entry lands, a direct GitHub install is treated as an
+unreviewed community source. Hermes scans the whole repository — including
+tests, CI and documentation — before installing it:
+
 ```bash
 hermes plugins install diegomarino/kanban-task-threads
 hermes plugins enable kanban-task-threads   # opt-in allow-list
+```
+
+If a future revision reports `CAUTION`, review every finding before repeating
+the command with `--force`; that flag cannot override a `DANGEROUS` verdict.
+Do not disable install-time scanning. Once the plugin is in the Hermes
+catalog, use the catalog name and its reviewed, pinned commit instead:
+
+```bash
+hermes plugins install kanban-task-threads
 ```
 
 Set the secret in your profile's environment (through your secret manager —
