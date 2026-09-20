@@ -155,17 +155,17 @@ def test_forum_requires_tag_is_unknown_without_bot_token():
 def test_forum_requires_tag_reads_channel_flags_with_bot_token():
     http = FakeHttp()
     http.queue(200, {"id": "777", "flags": 16})
-    t = make(http, bot_token="botsecret")
+    t = make(http, bot_token="x")
     assert t.forum_requires_tag("777") is True
     method, url, _ = http.calls[0]
     assert url == "https://discord.com/api/v10/channels/777"
-    assert http.headers_seen[0]["Authorization"] == "Bot botsecret"
+    assert http.headers_seen[0]["Authorization"] == "Bot x"
 
 
 def test_forum_without_flag_16_does_not_require_tags():
     http = FakeHttp()
     http.queue(200, {"id": "777", "flags": 0})
-    assert make(http, bot_token="botsecret").forum_requires_tag("777") is False
+    assert make(http, bot_token="x").forum_requires_tag("777") is False
 
 
 # --- bot-token extras (ADR-0003): title state, tags, archiving --------------------
@@ -185,7 +185,7 @@ FORUM_TAGS = {
 
 
 def bot(http):
-    return DiscordTransport(http, WEBHOOK, bot_token="botsecret", forum_channel_id="777")
+    return DiscordTransport(http, WEBHOOK, bot_token="x", forum_channel_id="777")
 
 
 def test_set_status_tag_resolves_the_name_against_the_forum():
@@ -197,7 +197,7 @@ def test_set_status_tag_resolves_the_name_against_the_forum():
     method, url, body = http.calls[1]
     assert (method, url) == ("PATCH", "https://discord.com/api/v10/channels/901")
     assert body == {"applied_tags": ["2"]}
-    assert http.headers_seen[1]["Authorization"] == "Bot botsecret"
+    assert http.headers_seen[1]["Authorization"] == "Bot x"
 
 
 def test_forum_tags_are_fetched_once_then_cached():

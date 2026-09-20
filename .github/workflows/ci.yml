@@ -35,22 +35,30 @@ jobs:
     name: Hermes plugin validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check out plugin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: plugin
+      - name: Check out pinned Hermes validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: NousResearch/hermes-agent
+          ref: 345cd2b057a452236de401d3534b8502a7465e8d
+          path: hermes-agent
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
           check-latest: false
       - name: Install pinned Hermes
-        run: >-
-          python -m pip install
-          git+https://github.com/NousResearch/hermes-agent.git@345cd2b057a452236de401d3534b8502a7465e8d
+        run: python -m pip install -e hermes-agent
       - name: Validate plugin contract
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-home
           HERMES_KANBAN_HOME: ${{ runner.temp }}/hermes-home
           OP_LOAD_DESKTOP_APP_SETTINGS: "false"
           OP_BIOMETRIC_UNLOCK_ENABLED: "false"
-        run: hermes plugins validate . --json
+        run: hermes plugins validate plugin --json
 
   plugin-scanner:
     name: HOL plugin scanner
