@@ -3,7 +3,7 @@
 # manifest_version stays at 1: the loader accepts 2 but the installer refuses
 # it, so `hermes plugins install` would abort.
 name: kanban-task-threads
-version: 0.2.0
+version: 0.2.1
 description: >-
   Every kanban task gets a forum thread of its own: the first post is a live
   status card rewritten in place, the replies are the append-only log.

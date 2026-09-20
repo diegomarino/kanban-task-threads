@@ -15,6 +15,7 @@ import json
 import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from .render import CONTENT_LIMIT, THREAD_TITLE_LIMIT, Card, truncate
@@ -232,7 +233,15 @@ class DiscordTransport:
 
 # Discord fronts with Cloudflare, which 403s (error code 1010) urllib's
 # default User-Agent. Any identifying UA passes; the default is banned.
-_USER_AGENT = "kanban-task-threads/0.2.0 (Hermes plugin)"
+def _manifest_version() -> str:
+    for line in (Path(__file__).resolve().parent.parent / "plugin.yaml").read_text().splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key == "version":
+            return value.strip().strip("\"'")
+    raise RuntimeError("plugin.yaml has no top-level version")
+
+
+_USER_AGENT = f"kanban-task-threads/{_manifest_version()} (Hermes plugin)"
 
 
 def urllib_http(

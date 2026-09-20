@@ -7,6 +7,17 @@ added in place, idempotently; deployed state files are never recreated.
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-09-20
+
+### Fixed
+- CI now validates against an exact Hermes commit using the supported editable
+  checkout flow, alongside the Python 3.11–3.13 matrix and HOL scanner.
+- Security fixtures no longer resemble a hardcoded Discord credential, so the
+  public marketplace scanner passes without a false high-severity finding.
+- Direct GitHub installs pass Hermes' install-time scanner without `--force`;
+  the README explains how to review any future `CAUTION` verdict without ever
+  bypassing `DANGEROUS` findings.
+
 ## [0.2.0] — 2026-09-20
 
 ### Added
