@@ -4,7 +4,7 @@
 
 [project]
 name = "kanban-task-threads"
-version = "0.2.1"
+version = "0.2.2"
 requires-python = ">=3.11,<3.14"  # Hermes's own bound: test what runs
 
 [tool.ruff]

@@ -7,6 +7,26 @@ added in place, idempotently; deployed state files are never recreated.
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-09-20
+
+### Fixed
+- Every profile that loads the plugin is now a lease candidate: the consumer
+  thread starts at register time instead of waiting for a hook kick (ADR-0013).
+  Kanban hooks fire only in the process holding Hermes' singleton dispatcher
+  lock, so with multiple profiles the publisher was effectively elected by
+  gateway boot order and the `consume:<board>` lease had nobody to fail over
+  to. The thread waits one poll interval before its first build, so
+  `register()` still performs no I/O and `hermes plugins validate` is
+  unaffected. Cold start on a hook-less profile is one interval later.
+- A deferred startup (`RetryableStartup`) no longer kills the consumer thread.
+  It refreshes the registered profile's secret scope and retries every poll
+  interval — sooner if a kick arrives, without letting an empty dispatcher
+  context change profile identity — and warns once per distinct reason instead
+  of on every attempt. Unload also rechecks its stop signal after an in-flight
+  preflight, so it cannot begin a new consume pass while shutting down.
+  Previously a transient failure stranded the profile until the next gateway
+  restart, which is unreachable for profiles that receive no kanban hooks.
+
 ## [0.2.1] — 2026-09-20
 
 ### Fixed

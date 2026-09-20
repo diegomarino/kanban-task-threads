@@ -76,10 +76,15 @@ Creates are stricter — see [failure-policy.md](failure-policy.md).
 
 ## Who runs the pass, and when
 
-`runtime.Runtime` owns one daemon thread per process. Hooks — all eight kanban
-hooks — are wired to `kick()`, which only sets an event (some hooks fire
-inside the dispatch lock; the callback must never do work). The thread also
-wakes every `poll_seconds` regardless, which is what picks up the event kinds
-no hook announces. The first kick lazily builds the consumer; see
+`runtime.Runtime` owns one daemon thread per process, started by `register()`
+so that **every profile loading the plugin contests the lease** — not just the
+one holding Hermes' singleton dispatcher lock, which is the only process where
+kanban hooks fire (ADR-0013). Hooks — all eight kanban hooks — are wired to
+`kick()`, which only sets an event (some hooks fire inside the dispatch lock;
+the callback must never do work). The thread wakes every `poll_seconds`
+regardless, which is what picks up the event kinds no hook announces, and a
+kick simply turns the next wake into *now*.
+
+The thread waits one interval before its first build; see
 [configuration.md](configuration.md) for what the build does and how it
 degrades.

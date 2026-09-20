@@ -1,14 +1,14 @@
 """kanban-task-threads — plugin entry point.
 
-`register(ctx)` does registration and nothing else: `hermes plugins validate`
-probes it in a subprocess with a stub context whose attributes are no-ops, so
-any real work here (opening a DB, resolving a secret, touching the network)
-would fail the catalog gate.
+`register(ctx)` installs callbacks and starts only a wait-before-build thread.
+`hermes plugins validate` probes it in a subprocess with a stub context whose
+attributes are no-ops, so any real work here (opening a DB, resolving a secret,
+touching the network) would fail the catalog gate.
 
-Everything real happens lazily, on the first hook kick, inside the Runtime's
-own thread — and inside the contextvars snapshot captured at that kick, so
-`agent.secret_scope` resolves the *profile's* secrets (a ContextVar scope does
-not cross an unbound thread; see docs/configuration.md).
+Everything real happens after the Runtime thread's initial wait. Each build
+attempt keeps the registered profile home while preserving other ContextVars
+from the latest attempt, so repaired secrets become visible even on a profile
+that receives no hooks (see docs/configuration.md).
 
 Hooks are best-effort "poll now" kicks (ADR-0002): the durable task_events cursor is
 what guarantees delivery; a missed kick costs seconds, not an event.
@@ -37,16 +37,67 @@ _SECRET_WEBHOOK = "KANBAN_TASK_THREADS_WEBHOOK_URL"
 _SECRET_BOT = "KANBAN_TASK_THREADS_BOT_TOKEN"
 
 
+def _refresh_profile_context(base_context, *, identity_context=None):
+    """Return a copy with the registered profile's current secret scope.
+
+    Retryable startup may outlive the mapping captured by ``register()``. Rebuild
+    it for the registered HERMES_HOME while preserving non-identity ContextVars
+    from the latest attempt. A hook-less candidate can then recover from file
+    changes or a previously failed hydration. Successfully hydrated external
+    sources retain Hermes' own cache semantics.
+    """
+    from pathlib import Path
+
+    from hermes_constants import get_hermes_home
+
+    if identity_context is None:
+        identity_context = base_context
+    profile_home = identity_context.run(lambda: Path(get_hermes_home()))
+    refreshed = base_context.copy()
+
+    def _refresh():
+        from agent import secret_scope
+        from hermes_cli.env_loader import hydrate_profile_secret_sources
+        from hermes_constants import (
+            get_hermes_home,
+            get_process_hermes_home,
+            set_hermes_home_override,
+        )
+
+        set_hermes_home_override(profile_home)
+        home = Path(get_hermes_home())
+        hydrate_profile_secret_sources(home)
+        if home.resolve() == Path(get_process_hermes_home()).resolve():
+            from tui_gateway.launch_profile_policy import launch_secret_scope
+
+            secrets = launch_secret_scope(home)
+        else:
+            secrets = secret_scope.build_profile_secret_scope(home)
+        secret_scope.set_secret_scope(secrets)
+
+    refreshed.run(_refresh)
+    return refreshed
+
+
 def register(ctx):
-    """The Hermes entry point: register the kick hooks and the unload
-    callback, construct the (inert) Runtime — and nothing else; the validate
-    probe runs this against a stub context."""
+    """Register hooks/unload and start the wait-before-build Runtime thread.
+
+    The validate probe uses a stub context, so no I/O may happen synchronously
+    or before the thread's first poll interval.
+    """
     from .kanban_task_threads.runtime import Runtime
 
+    profile_context = contextvars.copy_context()
     runtime = Runtime(
         lambda: _build_consumer(ctx),
         logger=logger,
         poll_seconds=float(ctx.get_config("poll_seconds", 20) or 20),
+        # A dispatcher kick may carry an intentionally empty Context. It may
+        # accelerate this profile, but it must never replace the profile home
+        # whose secrets the retry refreshes.
+        refresh_context=lambda attempt_context: _refresh_profile_context(
+            attempt_context, identity_context=profile_context
+        ),
     )
 
     def _kick(**kwargs):
@@ -58,16 +109,28 @@ def register(ctx):
     # The unload contract: discover_plugins(force=True) re-imports the module
     # and `plugins disable` walks the same path — without this, the consumer
     # thread is orphaned, contesting the lease from an unreachable module.
-    # (Guarded because the validate probe's stub context stubs the attribute.)
+    # Install it before starting the thread so a later registration failure
+    # cannot orphan a running Runtime. (Guarded because the validate probe's
+    # stub context stubs the attribute.)
     on_unload = getattr(ctx, "on_unload", None)
     if callable(on_unload):
         on_unload(runtime.shutdown)
 
+    # Every profile that loads the plugin becomes a lease candidate here (ADR-0013).
+    # Waiting for a kick instead would elect the publisher by accident: kanban hooks
+    # fire only in the process holding Hermes' singleton dispatcher lock, so the lease
+    # would never choose and that process dying would stop publishing silently.
+    # This starts a thread that sleeps before it builds, so register() itself
+    # still touches nothing — see the runtime module docstring.
+    runtime.start(profile_context)
+
 
 def _build_consumer(ctx):
-    """Runs once, in the runtime thread, inside the first kick's context
-    snapshot. Returning None degrades the plugin to a no-op (ADR-0003: requires_env
-    is not a load gate; never queue work that can never be sent)."""
+    """Run one startup attempt inside the profile context selected by Runtime.
+
+    Returning None degrades the plugin to a no-op (ADR-0003: requires_env is
+    not a load gate; never queue work that can never be sent).
+    """
     import os
     from pathlib import Path
 
