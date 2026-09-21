@@ -147,13 +147,13 @@ def test_status_tag_mapping():
     assert tag_name_for("running") == "running"
     assert tag_name_for("review") == "review"
     assert tag_name_for("done") == "done"
-    assert tag_name_for("archived") == "done"
+    assert tag_name_for("archived") == "archived"
     assert tag_name_for("stale") == "failed"  # presumed dead wants eyes
     assert tag_name_for("dependency_wait") == "blocked"
-    assert tag_name_for("triage") is None  # pre-run states: untagged
-    assert tag_name_for("todo") is None
-    assert tag_name_for("scheduled") is None
-    assert tag_name_for("ready") is None
+    assert tag_name_for("triage") == "triage"
+    assert tag_name_for("todo") == "todo"
+    assert tag_name_for("scheduled") == "scheduled"
+    assert tag_name_for("ready") == "ready"
 
 
 def test_blocked_tag_depends_on_the_block_kind():

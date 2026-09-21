@@ -32,6 +32,21 @@ EMBED_DESCRIPTION_LIMIT = 4096
 # Not configurable (ADR-0006): correctness, not taste.
 _NO_MENTIONS = {"parse": []}
 
+_MANAGED_FORUM_TAG_NAMES = (
+    "triage",
+    "todo",
+    "scheduled",
+    "ready",
+    "running",
+    "blocked",
+    "needs-human",
+    "review",
+    "done",
+    "archived",
+    "failed",
+)
+_MAX_FORUM_TAGS = 20
+
 # The http seam: http(method, url, json_body_or_None, headers=None)
 #   -> (status, decoded_body)
 Http = Callable[..., tuple[int, dict]]
@@ -60,6 +75,10 @@ class TransportError(RuntimeError):
         self.body = body
 
 
+class ForumTagSetupError(RuntimeError):
+    """The forum cannot fit or authorize the plugin-owned status tags."""
+
+
 class Transport(Protocol):
     """The ADR-0004 seam. `capabilities()` declares what this transport can do
     (`rich_card`, `live_timestamps`, `per_message_identity`, `title_state`,
@@ -68,6 +87,7 @@ class Transport(Protocol):
     starter in place, `append` posts one reply and returns its message id."""
 
     def capabilities(self) -> frozenset: ...
+    def prepare_forum(self) -> bool: ...
     def open_thread(self, *, title: str, card: Card) -> ThreadRef: ...
     def edit_card(self, ref: ThreadRef, card: Card) -> None: ...
     def append(self, ref: ThreadRef, *, content: str, username: str | None = None) -> str: ...
@@ -91,6 +111,7 @@ class DiscordTransport:
         self._bot_token = bot_token
         self._applied_tag_ids = list(applied_tag_ids)
         self._forum_channel_id = forum_channel_id
+        self._forum_channel: dict | None = None
         self._tag_ids_by_name: dict | None = None  # fetched once, cached
 
     def capabilities(self) -> frozenset:
@@ -138,49 +159,169 @@ class DiscordTransport:
 
     # --- bot-token extras (ADR-0003): capability-gated, the webhook cannot do these --
 
-    def set_status_tag(self, ref: ThreadRef, name: str) -> bool:
+    def set_status_tag(self, ref: ThreadRef, name: str) -> bool | dict:
         """Apply the forum tag with this *name* to the thread (replacing any).
-        Names are resolved against the forum's own tag list, fetched once —
-        installers manage tags by name, ids stay Discord's business. Unknown
-        name: no-op returning False (a forum without the convention's tags is
-        degraded, not broken)."""
-        tag_id = self._forum_tag_ids().get(name)
+        Names are resolved against the forum definition prepared on the first
+        pass that holds the board lease;
+        ids stay Discord's business. An unknown name is a no-op returning
+        False, which also protects a long-running process if an operator later
+        deletes a managed tag."""
+        tag_id = self.status_tag_id(name)
         if tag_id is None:
             return False
-        self._bot_patch_thread(ref, {"applied_tags": [tag_id]})
-        return True
+        return self._bot_patch_thread(ref, {"applied_tags": [tag_id]})
 
-    def clear_status_tag(self, ref: ThreadRef) -> None:
+    def status_tag_id(self, name: str) -> str | None:
+        """Resolve a plugin status-tag name once against the forum definition."""
+        return self._forum_tag_ids().get(name)
+
+    def clear_status_tag(self, ref: ThreadRef) -> bool | dict:
         """Back to the creation default: the configured applied_tag_ids (so a
         tag-required forum stays satisfied), or no tags at all."""
-        self._bot_patch_thread(ref, {"applied_tags": list(self._applied_tag_ids)})
+        return self._bot_patch_thread(ref, {"applied_tags": list(self._applied_tag_ids)})
 
-    def rename(self, ref: ThreadRef, name: str) -> None:
-        self._bot_patch_thread(ref, {"name": name})
+    def rename(self, ref: ThreadRef, name: str) -> bool | dict:
+        return self._bot_patch_thread(ref, {"name": name})
 
-    def set_archived(self, ref: ThreadRef, archived: bool) -> None:
-        self._bot_patch_thread(ref, {"archived": archived})
+    def set_archived(self, ref: ThreadRef, archived: bool) -> bool | dict:
+        return self._bot_patch_thread(ref, {"archived": archived})
+
+    def list_forum_threads(self, guild_id: str) -> dict[str, dict]:
+        """Return the bounded Discord metadata audit set.
+
+        Discord exposes active threads in one guild-wide bulk read, so filter
+        those by this forum. The public archived endpoint is forum-scoped and
+        intentionally limited to its latest 25 entries; there is no pagination
+        beyond that bounded reconciliation window.
+        """
+        headers = self._bot_headers()
+        active = self._call(
+            "GET",
+            f"https://discord.com/api/v10/guilds/{guild_id}/threads/active",
+            None,
+            headers=headers,
+        )
+        archived = self._call(
+            "GET",
+            f"https://discord.com/api/v10/channels/{self._require_forum()}"
+            "/threads/archived/public?limit=25",
+            None,
+            headers=headers,
+        )
+        forum_id = self._require_forum()
+        result: dict[str, dict] = {}
+        for channel in (*active.get("threads", []), *archived.get("threads", [])):
+            if str(channel.get("parent_id") or "") != forum_id:
+                continue
+            thread_id = str(channel.get("id") or "")
+            if not thread_id:
+                continue
+            result[thread_id] = {
+                "applied_tags": tuple(str(tag) for tag in channel.get("applied_tags", [])),
+                "archived": bool((channel.get("thread_metadata") or {}).get("archived")),
+            }
+        return result
+
+    def prepare_forum(self) -> bool:
+        """Ensure the plugin-owned status vocabulary exists in the forum.
+
+        Existing tags are preserved byte-for-byte in the PATCH body. Missing
+        managed names are appended, then Discord's response becomes the
+        authoritative name-to-id cache. Returns whether the forum requires a
+        tag on every newly-created post.
+        """
+        try:
+            channel = self._refresh_forum_channel()
+        except TransportError as err:
+            if err.status == 403:
+                raise ForumTagSetupError(
+                    "Discord refused to read the forum; grant the bot View Channel on this forum"
+                ) from err
+            raise
+        existing = list(channel.get("available_tags", []))
+        existing_names = {str(tag.get("name")) for tag in existing}
+        missing = [name for name in _MANAGED_FORUM_TAG_NAMES if name not in existing_names]
+        if len(existing) + len(missing) > _MAX_FORUM_TAGS:
+            raise ForumTagSetupError(
+                "Discord forums allow at most 20 tags; "
+                f"{len(existing)} exist and {len(missing)} managed tags are missing"
+            )
+        if missing:
+            try:
+                channel = self._call(
+                    "PATCH",
+                    f"https://discord.com/api/v10/channels/{self._require_forum()}",
+                    {"available_tags": existing + [{"name": name} for name in missing]},
+                    headers=self._bot_headers(),
+                )
+            except TransportError as err:
+                if err.status == 403:
+                    raise ForumTagSetupError(
+                        "Discord refused to create the missing status tags; grant the bot "
+                        "Manage Channels on this forum or create the tags manually"
+                    ) from err
+                raise
+            self._cache_forum_channel(channel)
+        requires_tag = bool(channel.get("flags", 0) & 16)
+        if requires_tag and not self._applied_tag_ids:
+            triage_id = self.status_tag_id("triage")
+            if triage_id:
+                self._applied_tag_ids = [triage_id]
+        return requires_tag
 
     def _forum_tag_ids(self) -> dict:
         if self._tag_ids_by_name is None:
-            channel = self._call(
-                "GET",
-                f"https://discord.com/api/v10/channels/{self._require_forum()}",
-                None,
-                headers=self._bot_headers(),
-            )
-            self._tag_ids_by_name = {
-                tag.get("name"): str(tag.get("id")) for tag in channel.get("available_tags", [])
-            }
+            self._cache_forum_channel(self._get_forum_channel())
         return self._tag_ids_by_name
 
-    def _bot_patch_thread(self, ref: ThreadRef, body: dict) -> None:
-        self._call(
+    def _get_forum_channel(self) -> dict:
+        if self._forum_channel is None:
+            self._refresh_forum_channel()
+        return self._forum_channel
+
+    def _refresh_forum_channel(self) -> dict:
+        channel = self._call(
+            "GET",
+            f"https://discord.com/api/v10/channels/{self._require_forum()}",
+            None,
+            headers=self._bot_headers(),
+        )
+        self._cache_forum_channel(channel)
+        return channel
+
+    def _cache_forum_channel(self, channel: dict) -> None:
+        self._forum_channel = channel
+        self._tag_ids_by_name = {
+            str(tag.get("name")): str(tag.get("id")) for tag in channel.get("available_tags", [])
+        }
+
+    def _bot_patch_thread(self, ref: ThreadRef, body: dict) -> bool | dict:
+        response = self._call(
             "PATCH",
             f"https://discord.com/api/v10/channels/{ref.thread_id}",
             body,
             headers=self._bot_headers(),
         )
+        readback = self._metadata_readback(response)
+        return readback if readback is not None else True
+
+    @staticmethod
+    def _metadata_readback(channel: dict) -> dict | None:
+        """Normalize fields present in a successful Discord channel response.
+
+        PATCH responses are authoritative when Discord supplies these fields;
+        tiny test/proxy responses that omit them retain the requested-state
+        fallback in the consumer.
+        """
+        result = {}
+        if "applied_tags" in channel:
+            result["applied_tags"] = tuple(str(tag) for tag in channel.get("applied_tags", []))
+        metadata = channel.get("thread_metadata") or {}
+        if "archived" in metadata:
+            result["archived"] = bool(metadata["archived"])
+        if "name" in channel:
+            result["name"] = str(channel["name"])
+        return result or None
 
     def _bot_headers(self) -> dict:
         if not self._bot_token:
@@ -205,12 +346,11 @@ class DiscordTransport:
         (None) and the 400 on the first create is mapped instead."""
         if not self._bot_token:
             return None
-        channel = self._call(
-            "GET",
-            f"https://discord.com/api/v10/channels/{channel_id}",
-            None,
-            headers={"Authorization": f"Bot {self._bot_token}"},
-        )
+        if self._forum_channel_id is None:
+            self._forum_channel_id = str(channel_id)
+        elif str(channel_id) != self._require_forum():
+            raise RuntimeError("forum channel mismatch")
+        channel = self._get_forum_channel()
         return bool(channel.get("flags", 0) & 16)
 
     def _embed(self, card: Card) -> dict:

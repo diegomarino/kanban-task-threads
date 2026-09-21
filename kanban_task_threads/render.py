@@ -136,22 +136,26 @@ def render_card(view: Mapping[str, str], *, template: str | None = None) -> Card
     )
 
 
-# status key -> forum tag name (the six-tag convention: running, needs-human,
-# blocked, review, done, failed). Pre-run states stay untagged; `stale` maps to
-# `failed` because a presumed-dead worker is what that tag exists to surface.
+# status key -> forum tag name. The mapping is total whenever the bot tag
+# capability exists: tags are plugin-owned filtering metadata, not a partial
+# lifecycle decoration. `stale` maps to `failed` because a presumed-dead
+# worker is what that tag exists to surface.
 _STATUS_TAGS = {
+    "triage": "triage",
+    "todo": "todo",
+    "scheduled": "scheduled",
+    "ready": "ready",
     "running": "running",
     "stale": "failed",
     "review": "review",
     "done": "done",
-    "archived": "done",
+    "archived": "archived",
     "dependency_wait": "blocked",
 }
 
 
 def tag_name_for(status_key: str, block_kind: str = "") -> str | None:
-    """Status key → forum tag name per the six-tag convention; None for the
-    pre-run states, which stay untagged."""
+    """Status key → the plugin-owned forum tag name."""
     if status_key == "blocked":
         return "needs-human" if block_kind == "needs_input" else "blocked"
     return _STATUS_TAGS.get(status_key)

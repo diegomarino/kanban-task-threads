@@ -41,6 +41,16 @@ class FakeCtx:
         return default
 
 
+class ConfiguredCtx(FakeCtx):
+    def __init__(self, profile_name, settings):
+        super().__init__()
+        self.profile_name = profile_name
+        self.settings = settings
+
+    def get_config(self, key, default=None):
+        return self.settings.get(key, default)
+
+
 def plugin_threads():
     return [t for t in threading.enumerate() if t.name == "kanban-task-threads" and t.is_alive()]
 
@@ -163,6 +173,37 @@ def test_register_registers_hooks_and_unload():
         assert len(ctx.unload_callbacks) == 1, "ctx.on_unload not registered"
     finally:
         ctx.unload_callbacks[0]()
+
+
+def test_matching_publisher_profile_starts_the_runtime():
+    ctx = ConfiguredCtx("publisher", {"publisher_profile": "publisher"})
+    load_entry_point().register(ctx)
+    try:
+        assert ctx.hooks
+        assert len(ctx.unload_callbacks) == 1
+        assert plugin_threads()
+    finally:
+        ctx.unload_callbacks[0]()
+
+
+def test_non_matching_publisher_profile_is_inert():
+    ctx = ConfiguredCtx("worker", {"publisher_profile": "publisher"})
+    load_entry_point().register(ctx)
+    assert ctx.hooks == {}
+    assert ctx.unload_callbacks == []
+    assert plugin_threads() == []
+
+
+def test_publisher_profile_match_does_not_normalize_whitespace():
+    ctx = ConfiguredCtx("publisher", {"publisher_profile": " publisher "})
+    load_entry_point().register(ctx)
+    try:
+        assert ctx.hooks == {}
+        assert ctx.unload_callbacks == []
+        assert plugin_threads() == []
+    finally:
+        for callback in ctx.unload_callbacks:
+            callback()
 
 
 def test_register_wires_fresh_profile_context_into_the_runtime(monkeypatch):

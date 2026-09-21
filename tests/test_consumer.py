@@ -8,7 +8,7 @@ from conftest import FakeTransport, add_event, insert_task, make_board
 
 from kanban_task_threads.consumer import Consumer
 from kanban_task_threads.store import StateStore
-from kanban_task_threads.transport import TransportError
+from kanban_task_threads.transport import ForumTagSetupError, TransportError
 
 NOW = 1_789_700_100
 
@@ -109,6 +109,70 @@ def test_lease_holder_excludes_second_consumer(board, tmp_path):
     c2.run_once(now=NOW + 3)
     assert t1.ops().count("open_thread") == 1
     assert t2.ops().count("open_thread") == 0
+
+
+def test_forum_preparation_is_serialized_by_the_publish_lease(board, tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    capabilities = {
+        "rich_card",
+        "live_timestamps",
+        "per_message_identity",
+        "title_state",
+        "tags",
+    }
+    blocked_transport = FakeTransport(capabilities)
+    winner_transport = FakeTransport(capabilities)
+    blocked_transport.record_prepare = True
+    winner_transport.record_prepare = True
+    blocked = Consumer(
+        tmp_path / "kanban.db", store, blocked_transport, board="default", holder="p2"
+    )
+    winner = Consumer(tmp_path / "kanban.db", store, winner_transport, board="default", holder="p3")
+    token = store.acquire_lease("consume:default", "p1", now=NOW, ttl=60)
+
+    assert blocked.run_once(now=NOW + 1).acquired is False
+    assert blocked_transport.ops() == []
+
+    store.release_lease("consume:default", "p1", token)
+    assert winner.run_once(now=NOW + 2).acquired is True
+    assert winner_transport.ops() == ["prepare_forum"]
+
+
+def test_forum_setup_error_blocks_publication_and_retries_on_the_next_pass(board, tmp_path):
+    walk_lifecycle(board)
+    store = StateStore(tmp_path / "state.db")
+    transport = FakeTransport({"title_state", "tags"})
+    transport.record_prepare = True
+    transport.queue_error("prepare_forum", ForumTagSetupError("grant Manage Channels"))
+    consumer = Consumer(tmp_path / "kanban.db", store, transport, board="default", holder="bot")
+
+    first = consumer.run_once(now=NOW)
+    assert first.errors == ["Discord forum setup failed: grant Manage Channels"]
+    assert transport.ops() == ["prepare_forum"]
+    assert store.get_cursor("default") == 0
+
+    second = consumer.run_once(now=NOW + 1)
+    assert second.opened == ["t_1"]
+    assert transport.ops()[:2] == ["prepare_forum", "prepare_forum"]
+
+
+def test_losing_lease_during_forum_setup_forces_fresh_setup_after_reacquire(board, tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    transport = FakeTransport({"title_state", "tags"})
+    transport.record_prepare = True
+    consumer = Consumer(tmp_path / "kanban.db", store, transport, board="default", holder="bot")
+    renewals = iter((True, False))
+    real_renew = store.renew_lease
+    store.renew_lease = lambda *args, **kwargs: next(renewals)
+
+    first = consumer.run_once(now=NOW)
+    assert first.warnings == ["lease lost during Discord forum setup"]
+    assert transport.ops() == ["prepare_forum"]
+
+    store.renew_lease = real_renew
+    second = consumer.run_once(now=NOW + 1)
+    assert second.acquired is True
+    assert transport.ops() == ["prepare_forum", "prepare_forum"]
 
 
 # --- Discord being Discord ----------------------------------------------------

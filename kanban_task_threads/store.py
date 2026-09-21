@@ -37,8 +37,8 @@ CREATE TABLE IF NOT EXISTS posts (
     pending_create_at INTEGER,               -- set: a create with unknown outcome
     card_dirty INTEGER NOT NULL DEFAULT 0,   -- set: last card refresh failed
     last_status_key TEXT,                    -- what the card currently shows
-    last_tag TEXT,                           -- forum tag currently applied
-    last_name TEXT,                          -- thread name currently set
+    last_tag TEXT,                           -- cached observed/requested forum tag
+    last_name TEXT,                          -- cached observed/requested thread name
     thread_archived INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (board, task_id)
 );
@@ -242,6 +242,17 @@ class StateStore:
             )
         ]
 
+    def live_posts(self, board: str) -> list[dict]:
+        """Plugin-owned Discord posts eligible for bounded metadata audit."""
+        return [
+            dict(row)
+            for row in self._conn.execute(
+                "SELECT * FROM posts WHERE board = ? AND state = 'live' "
+                "AND thread_id IS NOT NULL ORDER BY task_id",
+                (board,),
+            )
+        ]
+
     def set_thread_state(
         self,
         board: str,
@@ -252,8 +263,8 @@ class StateStore:
         name: str | None = None,
         archived: bool | None = None,
     ) -> None:
-        """What the Discord thread currently shows — so maintenance PATCHes
-        (tag, rename, archive) happen only on change, never every pass."""
+        """Cache observed/requested Discord metadata so immediate maintenance
+        avoids redundant PATCHes. The bounded bulk audit owns external truth."""
         sets, params = [], []
         for column, value in (
             ("last_status_key", status_key),

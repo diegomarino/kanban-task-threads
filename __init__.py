@@ -85,6 +85,14 @@ def register(ctx):
     The validate probe uses a stub context, so no I/O may happen synchronously
     or before the thread's first poll interval.
     """
+    publisher_profile = str(ctx.get_config("publisher_profile", "") or "")
+    profile_name = str(getattr(ctx, "profile_name", "") or "")
+    if publisher_profile and profile_name != publisher_profile:
+        # Explicit pinning opts out of ADR-0013's all-profile candidacy. Keep
+        # this profile completely inert: no Runtime, hooks, unload callback,
+        # secret resolution, database access, or network work.
+        return
+
     from .kanban_task_threads.runtime import Runtime
 
     profile_context = contextvars.copy_context()
@@ -137,7 +145,11 @@ def _build_consumer(ctx):
     from .kanban_task_threads.consumer import Consumer
     from .kanban_task_threads.runtime import RetryableStartup
     from .kanban_task_threads.store import StateStore
-    from .kanban_task_threads.transport import DiscordTransport, TransportError, urllib_http
+    from .kanban_task_threads.transport import (
+        DiscordTransport,
+        TransportError,
+        urllib_http,
+    )
 
     try:
         from agent import secret_scope
@@ -176,10 +188,10 @@ def _build_consumer(ctx):
     )
 
     # Preflight. The channel is asked, never configured (ADR-0003): one credential,
-    # one source of truth. With a bot token the tag requirement is checked for
-    # real; without one, the consumer maps the create-time 400 to an
-    # actionable message instead. Only a Discord *rejection* of the credential
-    # is a config verdict; a 5xx/429 or a network error may heal.
+    # one source of truth. Managed tag setup is deliberately deferred until
+    # Consumer holds the board lease, so multiple profile candidates cannot
+    # race full-list available_tags replacements. Without a bot token, the
+    # consumer maps a create-time tag-required 400 to an actionable message.
     try:
         info = transport.webhook_info()
         # Rebuild with the discovered forum id: the bot tag operations resolve
@@ -192,7 +204,6 @@ def _build_consumer(ctx):
             applied_tag_ids=tags,
             forum_channel_id=str(info["channel_id"]),
         )
-        requires_tag = transport.forum_requires_tag(str(info["channel_id"]))
     except TransportError as err:
         if 400 <= err.status < 500 and err.status != 429:
             logger.error(
@@ -206,15 +217,6 @@ def _build_consumer(ctx):
         raise RetryableStartup(f"Discord preflight failed: {err}") from err
     except OSError as exc:  # URLError and socket timeouts are OSError
         raise RetryableStartup(f"network error during preflight: {exc!r}") from exc
-    if requires_tag and not tags:
-        logger.error(
-            "kanban-task-threads: forum %s requires a tag on every post and "
-            "discord_applied_tag_ids is empty — every create would 400. "
-            "Set discord_applied_tag_ids or drop the forum's tag requirement. "
-            "Plugin is inactive.",
-            info["channel_id"],
-        )
-        return None
 
     # State is board state (ADR-0005): a plugin-owned DB under the board-shared
     # kanban root — never ctx.state, which resolves per profile.

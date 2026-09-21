@@ -53,27 +53,33 @@ hook firing (the poll interval covers hook-less kinds like `commented`).
 | `on_kanban_worker_stale_claim` | dispatcher | the SIGKILL case reaches the card fast |
 | `on_kanban_dispatch_tick` | dispatcher, after the lock, **in an empty contextvars Context** | the steady heartbeat — and the reason startup treats a scope-less kick as retryable, not as "unconfigured" |
 
-## 3 · Hermes task states → card rendering
+## 3 · Hermes task states → card rendering and forum tag
 
 `VALID_STATUSES` (9) plus two computed presentations:
 
-| Board state | Card shows | Colour |
-|---|---|---|
-| `triage` | triage | grey |
-| `todo` | todo | grey-blue |
-| `todo` **+ `block_kind='dependency'`** | **waiting on dependency** | yellow — dependency blocks route to `todo`, not `blocked`; keying on status alone would hide the wait |
-| `scheduled` | scheduled | blue |
-| `ready` | ready | teal |
-| `running` | running | green |
-| `running` + heartbeat older than `stale_after_seconds` | **stale — no heartbeat** | red — computed, since a SIGKILLed worker reports nothing; appears on the card but never as a reply (state vs events) |
-| `blocked` | blocked + `block_kind` + reason | orange |
-| `review` | review | purple |
-| `done` | done | green |
-| `archived` | archived | slate |
+| Board state | Card shows | Colour | Bot tag |
+|---|---|---|---|
+| `triage` | triage | grey | `triage` |
+| `todo` | todo | grey-blue | `todo` |
+| `todo` **+ `block_kind='dependency'`** | **waiting on dependency** | yellow — dependency blocks route to `todo`, not `blocked`; keying on status alone would hide the wait | `blocked` |
+| `scheduled` | scheduled | blue | `scheduled` |
+| `ready` | ready | teal | `ready` |
+| `running` | running | green | `running` |
+| `running` + heartbeat older than `stale_after_seconds` | **stale — no heartbeat** | red — computed, since a SIGKILLed worker reports nothing; appears on the card but never as a reply (state vs events) | `failed` |
+| `blocked` + `needs_input` | blocked + kind + reason | orange | `needs-human` |
+| other `blocked` | blocked + kind + reason | orange | `blocked` |
+| `review` | review | purple | `review` |
+| `done` | done | green | `done` |
+| `archived` | archived | slate | `archived` |
 
 `VALID_BLOCK_KINDS`: `dependency` (see above), `needs_input`, `capability`,
 `transient` — the latter three surface on the `blocked` card's "waiting on"
 line with the reason from the last `blocked` event.
+
+In bot mode these eleven exact tag names are the managed vocabulary. Startup
+reuses existing exact-name matches and creates only missing names, preserving
+all unrelated forum tags. Manual creation is the fallback when the bot lacks
+forum-scoped `MANAGE_CHANNELS`.
 
 ## 4 · Plugin operations → Discord API
 
@@ -87,6 +93,7 @@ line with the reason from the last `blocked` event.
 | `set_status_tag` | `PATCH /channels/{thread_id}` `applied_tags` (bot token) | tag *names* resolved against the forum's own list, fetched once; unknown name = degraded no-op |
 | `rename` | `PATCH /channels/{thread_id}` `name` (bot token) | keeps the frozen thread name honest after a title edit |
 | `set_archived` | `PATCH /channels/{thread_id}` `archived` (bot token) | done/archived tasks archive; reanimation unarchives first |
+| `list_forum_threads` | bulk `GET` active guild threads + latest 25 public archived forum threads (bot token) | actual `applied_tags` and `thread_metadata.archived`; filter active results to this forum, never per-thread GET or deeper archive scan |
 
 Every mutating body carries `allowed_mentions: {"parse": []}` and
 deterministic truncation (2000 / 4096 / 100 / 256 embed title).
@@ -95,12 +102,12 @@ deterministic truncation (2000 / 4096 / 100 / 256 embed title).
 
 | Discord says | Meaning | Plugin does |
 |---|---|---|
-| 2xx | ok | advance the per-task watermark |
+| 2xx | ok | advance the per-task watermark; for bot PATCHes, use returned channel metadata as authoritative readback when present |
 | 400, code **40067** | forum requires a tag | dead-letter with "set `discord_applied_tag_ids`" |
 | other permanent 4xx | payload/operation rejected | dead-letter with detail |
 | **404**, or **400 / code 10003**, on edit/append | a human deleted the post/thread | tombstone; stop; operator-only recreation |
 | 401/404 on the webhook itself (preflight) | bad credential | config verdict: plugin inactive with message |
-| **429** + `retry_after` | rate limit | per-task backoff; card marked dirty |
+| **429** + `retry_after` | rate limit | per-task publication backoff, or metadata-audit retry at the supplied delay; normal event consumption continues |
 | 5xx on **create** | outcome UNKNOWN (proxy may have relayed) | pending-create, reported every pass, operator reconciles |
 | 5xx on reply/edit | transient | retry next pass; card dirty if the edit failed |
 | **403, error code 1010** | Cloudflare bans the default urllib UA | never happens: identifying User-Agent always sent |
@@ -114,6 +121,6 @@ deterministic truncation (2000 / 4096 / 100 / 256 embed title).
   already does with Discord messages, not by this plugin (ADR-0011).
 - **Waking an agent** on an event: out of scope by design (ADR-0001's scope) — visibility
   and waking are different concerns.
-- Discord events the plugin never consumes: it registers no gateway intents,
-  reads no messages, and needs no privileged access — the webhook writes, the
-  optional bot token reads one channel object.
+- Discord events the plugin never consumes: it registers no gateway intents
+  and reads no messages. The optional bot performs only the bounded channel
+  metadata reads above.

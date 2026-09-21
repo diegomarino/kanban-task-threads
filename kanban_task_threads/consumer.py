@@ -35,7 +35,14 @@ from .render import (
     truncate,
 )
 from .store import StateStore
-from .transport import CAP_TAGS, CAP_TITLE_STATE, ThreadRef, Transport, TransportError
+from .transport import (
+    CAP_TAGS,
+    CAP_TITLE_STATE,
+    ForumTagSetupError,
+    ThreadRef,
+    Transport,
+    TransportError,
+)
 from .view import build_view
 
 # Which events earn a permanent record in the thread. Not templatable (ADR-0006).
@@ -54,6 +61,8 @@ DEFAULT_REPLY_ON = (
 )
 
 _RETRYABLE_STATUSES = {429}  # everything else 4xx is permanent for our payloads
+_AUDIT_CLEAN_BACKOFF = (300, 900, 1800, 3600)
+_AUDIT_REPAIR_CONFIRM_SECONDS = 60
 
 # `hermes kanban block|schedule|unblock --reason` mirrors the reason as a
 # comment ("PREFIX: reason", see _commented in hermes_cli/kanban.py) alongside
@@ -91,8 +100,9 @@ _TAG_REQUIRED_HINT = (
 class Consumer:
     """One pass over a board's task_events, publishing through a Transport.
 
-    Stateless between passes except for what StateStore holds; safe to
-    construct in every process — the lease decides who actually publishes.
+    Safe to construct in every process: the lease decides who performs forum
+    setup and publishes. Forum-prepared and audit-schedule flags are private
+    process-local traffic hints; durable correctness remains in StateStore.
     """
 
     def __init__(
@@ -129,6 +139,11 @@ class Consumer:
         self._reply_templates = reply_templates or {}
         self._comment_excerpt_chars = comment_excerpt_chars
         self._guild_id = guild_id
+        # Discord metadata is external truth. These are deliberately private,
+        # process-local scheduling hints — never schema, queue, or durable state.
+        self._next_metadata_audit_at = 0
+        self._metadata_audit_level = 0
+        self._forum_prepared = False
 
     def run_once(self, now: int | None = None) -> Report:
         """One full pass: acquire the fenced lease, scan events past the board
@@ -148,6 +163,34 @@ class Consumer:
         conn = sqlite3.connect(f"file:{self._board_db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         try:
+
+            def owns_lease():
+                # Fencing: prove ownership before every task's side effects. A
+                # holder that lost the lease must not race the new one.
+                return self._store.renew_lease(
+                    lease, self._holder, token, now=self._now(), ttl=self._lease_ttl
+                )
+
+            if CAP_TAGS in self._transport.capabilities() and not self._forum_prepared:
+                if not owns_lease():
+                    report.warnings.append("lease lost before Discord forum setup")
+                    return report
+                try:
+                    self._transport.prepare_forum()
+                except ForumTagSetupError as exc:
+                    report.errors.append(f"Discord forum setup failed: {exc}")
+                    return report
+                except TransportError as err:
+                    report.warnings.append(f"Discord forum setup failed, will retry: {err}")
+                    return report
+                except Exception as exc:
+                    report.warnings.append(f"Discord forum setup failed, will retry: {exc!r}")
+                    return report
+                if not owns_lease():
+                    report.warnings.append("lease lost during Discord forum setup")
+                    return report
+                self._forum_prepared = True
+
             cursor = self._store.get_cursor(self._board)
             events = conn.execute(
                 "SELECT id, task_id, kind, payload, created_at "
@@ -158,13 +201,6 @@ class Consumer:
             for row in events:
                 by_task.setdefault(row["task_id"], []).append(row)
             aborted = False
-
-            def owns_lease():
-                # Fencing: prove ownership before every task's side effects. A
-                # holder that lost the lease must not race the new one.
-                return self._store.renew_lease(
-                    lease, self._holder, token, now=self._now(), ttl=self._lease_ttl
-                )
 
             if events:
                 batch_max = events[-1]["id"]
@@ -210,6 +246,15 @@ class Consumer:
                     report.warnings.append("lease lost mid-pass; aborting before the next repaint")
                     break
                 self._repaint(conn, task_id, report)
+
+            # Event publication remains the foreground path. The bounded
+            # Discord audit runs afterwards, under the same fenced lease, and
+            # failures only add warnings plus an in-memory retry time.
+            if not aborted and self._metadata_audit_due(now):
+                if owns_lease():
+                    self._audit_discord_metadata(conn, now, report, owns_lease)
+                else:
+                    report.warnings.append("lease lost before Discord metadata audit")
         finally:
             conn.close()
             self._store.release_lease(lease, self._holder, token)
@@ -417,9 +462,9 @@ class Consumer:
     def _maintain_thread(self, task_id: str, ref: ThreadRef, view: dict, report: Report) -> None:
         """Keep the thread's out-of-band properties (ADR-0003 bot extras) in step
         with the card: tag per status, name per title, archived when done.
-        Each is PATCHed only on change — the store remembers what the thread
-        currently shows. Failures are transient by policy: the un-updated
-        store retries them on the next pass."""
+        Each is PATCHed only on cached change; the bulk audit is what compares
+        with external truth. Failures are transient by policy: the un-updated
+        cache retries them on the next pass."""
         store, board = self._store, self._board
         post = store.get_post(board, task_id)
         if post is None:
@@ -431,31 +476,64 @@ class Consumer:
             return
         try:
             wants_archived = key in ("done", "archived")
-            if CAP_TITLE_STATE in caps and post["thread_archived"] and not wants_archived:
-                # reanimated: unarchive first so the PATCHes below land cleanly
-                self._transport.set_archived(ref, False)
-                store.set_thread_state(board, task_id, archived=False)
+            tag = tag_name_for(key, view["block_kind"]) if CAP_TAGS in caps else None
+            needs_tag_change = CAP_TAGS in caps and (
+                (tag is not None and tag != post["last_tag"])
+                or (tag is None and bool(post["last_tag"]))
+            )
+            if (
+                CAP_TITLE_STATE in caps
+                and post["thread_archived"]
+                and (not wants_archived or needs_tag_change)
+            ):
+                # Reanimated and retagged archived threads must be unarchived
+                # before metadata changes. The desired terminal archive is
+                # restored only after the tag/name PATCHes below have landed.
+                result = self._transport.set_archived(ref, False)
+                self._record_archived_readback(task_id, False, result)
+                post = store.get_post(board, task_id)
+                if post["thread_archived"]:
+                    store.set_card_dirty(board, task_id, True)
+                    report.warnings.append(
+                        f"{task_id}: Discord still reports the thread archived after unarchive"
+                    )
+                    return
             if CAP_TAGS in caps:
-                tag = tag_name_for(key, view["block_kind"])
                 if tag and tag != post["last_tag"]:
-                    if self._transport.set_status_tag(ref, tag):
-                        store.set_thread_state(board, task_id, tag=tag)
+                    result = self._transport.set_status_tag(ref, tag)
+                    if result:
+                        self._record_tag_readback(task_id, tag, result)
+                        post = store.get_post(board, task_id)
                 elif tag is None and post["last_tag"]:
-                    # reverted to an untagged (pre-run) state: a stale "done"
-                    # left applied would lie in the forum's filter view
-                    self._transport.clear_status_tag(ref)
-                    store.set_thread_state(board, task_id, tag="")
+                    # Defensive future-status fallback: restore creation
+                    # defaults so a tag-required forum remains valid.
+                    result = self._transport.clear_status_tag(ref)
+                    self._record_tag_readback(task_id, "", result)
+                    post = store.get_post(board, task_id)
             if CAP_TITLE_STATE in caps:
                 name = render_thread_name(view["title"], task_id)
                 # A NULL last_name is a legacy row (thread created before names
                 # carried the id): the live name is unknown, so PATCH it once
                 # rather than recording an assumption that can never self-correct.
                 if name != (post["last_name"] or ""):
-                    self._transport.rename(ref, name)
-                    store.set_thread_state(board, task_id, name=name)
-                if wants_archived and not post["thread_archived"]:
-                    self._transport.set_archived(ref, True)
-                    store.set_thread_state(board, task_id, archived=True)
+                    result = self._transport.rename(ref, name)
+                    readback_name = result.get("name") if isinstance(result, dict) else None
+                    store.set_thread_state(board, task_id, name=readback_name or name)
+                    if isinstance(result, dict):
+                        self._record_archived_readback(
+                            task_id, bool(post["thread_archived"]), result
+                        )
+                    post = store.get_post(board, task_id)
+                if bool(post["thread_archived"]) != wants_archived:
+                    result = self._transport.set_archived(ref, wants_archived)
+                    self._record_archived_readback(task_id, wants_archived, result)
+                    post = store.get_post(board, task_id)
+                    if bool(post["thread_archived"]) != wants_archived:
+                        store.set_card_dirty(board, task_id, True)
+                        report.warnings.append(
+                            f"{task_id}: Discord returned archive state "
+                            f"{bool(post['thread_archived'])} after requesting {wants_archived}"
+                        )
         except TransportError as err:
             # Dirty the card so the retry has a vehicle: a terminal task may
             # never see another event to re-enter maintenance through.
@@ -464,6 +542,162 @@ class Consumer:
         except Exception as exc:
             store.set_card_dirty(board, task_id, True)
             report.warnings.append(f"{task_id}: thread maintenance failed, will retry: {exc!r}")
+
+    def _metadata_audit_due(self, now: int) -> bool:
+        caps = self._transport.capabilities()
+        return bool(
+            self._guild_id
+            and CAP_TAGS in caps
+            and CAP_TITLE_STATE in caps
+            and now >= self._next_metadata_audit_at
+        )
+
+    def _audit_discord_metadata(self, conn, now: int, report: Report, owns_lease) -> None:
+        """Repair tags/archive state from two bounded Discord bulk reads."""
+        patched = False
+        try:
+            actual_threads = self._transport.list_forum_threads(self._guild_id)
+            owned = {post["thread_id"]: post for post in self._store.live_posts(self._board)}
+            for thread_id, actual in actual_threads.items():
+                post = owned.get(thread_id)
+                if post is None:
+                    continue
+                if (
+                    post["destination"]
+                    and self._destination
+                    and post["destination"] != self._destination
+                ):
+                    # ADR-0007 destination freeze applies to metadata too: a
+                    # replacement webhook in the same forum must not make the
+                    # old webhook's posts eligible for bot-side mutation.
+                    continue
+                task = conn.execute(
+                    "SELECT * FROM tasks WHERE id = ?", (post["task_id"],)
+                ).fetchone()
+                if task is None:
+                    continue
+                view = self._view_for(conn, post["task_id"], task, now)
+                key = resolve_status_key(view["status"], view["block_kind"])
+                tag_name = tag_name_for(key, view["block_kind"])
+                tag_id = self._transport.status_tag_id(tag_name) if tag_name else None
+                desired_tags = (tag_id,) if tag_id is not None else None
+                wants_archived = key in ("done", "archived")
+                current_tags = tuple(str(tag) for tag in actual.get("applied_tags", ()))
+                current_archived = bool(actual.get("archived"))
+                tag_mismatch = desired_tags is not None and current_tags != desired_tags
+                ref = ThreadRef(thread_id=thread_id, message_id=post["message_id"])
+
+                if (tag_mismatch or current_archived != wants_archived) and not owns_lease():
+                    report.warnings.append(
+                        "lease lost during Discord metadata audit; aborting before the next task"
+                    )
+                    return
+
+                # Changing tags on an archived thread is ordered through an
+                # explicit unarchive; the desired terminal archive is restored
+                # only after the tag PATCH has landed.
+                if current_archived and tag_mismatch:
+                    result = self._transport.set_archived(ref, False)
+                    self._record_archived_readback(post["task_id"], False, result)
+                    current_tags = self._read_tags(result, current_tags)
+                    current_archived = self._read_archived(result, False)
+                    tag_mismatch = desired_tags is not None and current_tags != desired_tags
+                    patched = True
+                    if current_archived:
+                        raise RuntimeError(
+                            f"{post['task_id']}: Discord still reports the thread archived "
+                            "after audit unarchive"
+                        )
+                if tag_mismatch:
+                    result = self._transport.set_status_tag(ref, tag_name)
+                    if result:
+                        self._record_tag_readback(post["task_id"], tag_name, result)
+                        current_tags = self._read_tags(result, desired_tags)
+                        current_archived = self._read_archived(result, current_archived)
+                        patched = True
+                if current_archived != wants_archived:
+                    result = self._transport.set_archived(ref, wants_archived)
+                    self._record_archived_readback(post["task_id"], wants_archived, result)
+                    current_tags = self._read_tags(result, current_tags)
+                    current_archived = self._read_archived(result, wants_archived)
+                    patched = True
+
+                # Bulk reads are the current external observation even when no
+                # PATCH was required; refresh cache hints from that observation.
+                observed_tag = (
+                    tag_name if desired_tags is not None and current_tags == desired_tags else ""
+                )
+                self._store.set_thread_state(
+                    self._board,
+                    post["task_id"],
+                    status_key=key,
+                    tag=observed_tag,
+                    archived=current_archived,
+                )
+        except TransportError as err:
+            self._metadata_audit_level = 0
+            delay = _retry_after(err) if err.status == 429 else _AUDIT_REPAIR_CONFIRM_SECONDS
+            self._next_metadata_audit_at = self._now() + delay
+            if err.status == 429:
+                report.warnings.append(
+                    f"Discord metadata audit rate limited; retrying after {delay}s"
+                )
+            else:
+                report.warnings.append(f"Discord metadata audit failed, will retry: {err}")
+            return
+        except Exception as exc:
+            self._metadata_audit_level = 0
+            self._next_metadata_audit_at = self._now() + _AUDIT_REPAIR_CONFIRM_SECONDS
+            report.warnings.append(f"Discord metadata audit failed, will retry: {exc!r}")
+            return
+
+        if patched:
+            self._metadata_audit_level = 0
+            self._next_metadata_audit_at = self._now() + _AUDIT_REPAIR_CONFIRM_SECONDS
+        else:
+            delay = _AUDIT_CLEAN_BACKOFF[self._metadata_audit_level]
+            self._metadata_audit_level = min(
+                self._metadata_audit_level + 1, len(_AUDIT_CLEAN_BACKOFF) - 1
+            )
+            self._next_metadata_audit_at = self._now() + delay
+
+    def _record_tag_readback(self, task_id: str, requested: str, result) -> None:
+        if isinstance(result, dict) and "applied_tags" in result:
+            tag_id = self._transport.status_tag_id(requested) if requested else None
+            observed = (
+                requested if tuple(result["applied_tags"]) == ((tag_id,) if tag_id else ()) else ""
+            )
+        else:
+            observed = requested
+        archived = result.get("archived") if isinstance(result, dict) else None
+        self._store.set_thread_state(self._board, task_id, tag=observed, archived=archived)
+
+    def _record_archived_readback(self, task_id: str, requested: bool, result) -> None:
+        tag = None
+        if isinstance(result, dict) and "applied_tags" in result:
+            post = self._store.get_post(self._board, task_id)
+            cached = (post or {}).get("last_tag") or ""
+            cached_id = self._transport.status_tag_id(cached) if cached else None
+            observed = tuple(str(value) for value in result["applied_tags"])
+            tag = cached if cached_id is not None and observed == (cached_id,) else ""
+        self._store.set_thread_state(
+            self._board,
+            task_id,
+            tag=tag,
+            archived=self._read_archived(result, requested),
+        )
+
+    @staticmethod
+    def _read_tags(result, fallback: tuple[str, ...]) -> tuple[str, ...]:
+        if isinstance(result, dict) and "applied_tags" in result:
+            return tuple(str(tag) for tag in result["applied_tags"])
+        return fallback
+
+    @staticmethod
+    def _read_archived(result, fallback: bool) -> bool:
+        if isinstance(result, dict) and "archived" in result:
+            return bool(result["archived"])
+        return fallback
 
     def _unlocks_of(self, conn, task_id: str) -> str:
         """First dependent (task_links child) this task gates, labeled."""
