@@ -1,36 +1,31 @@
-# kanban-task-threads — a live status card per kanban task, in a thread of its own.
-#
-# manifest_version stays at 1: the loader accepts 2 but the installer refuses
-# it, so `hermes plugins install` would abort.
 name: kanban-task-threads
-version: 0.2.3
+version: 0.3.0
 description: >-
   Every kanban task gets a forum thread of its own: the first post is a live
-  status card rewritten in place, the replies are the append-only log.
-  Discord is the first transport.
+  status card rewritten in place, the replies are the append-only log. Discord
+  is the first transport.
 author: diego
 license: MIT
 homepage: https://github.com/diegomarino/kanban-task-threads
 kind: standalone
 manifest_version: 1
-
-requires_hermes: ">=0.20"
-tags: [discord, kanban, notifications, visibility]
-
-# Not a load gate: the plugin checks its own configuration at
-# startup and degrades to a no-op. Declared here so installers know what to set.
+requires_hermes: '>=0.20'
+tags:
+  - discord
+  - kanban
+  - notifications
+  - visibility
 requires_env:
   - name: KANBAN_TASK_THREADS_WEBHOOK_URL
     description: Discord webhook bound to the forum channel the cards publish to
     secret: true
 optional_env:
   - name: KANBAN_TASK_THREADS_BOT_TOKEN
-    description: Optional existing publisher bot token; role needs forum-scoped MANAGE_THREADS, READ_MESSAGE_HISTORY, and MANAGE_CHANNELS for automatic tag setup
+    description: >-
+      Optional existing publisher bot token; role needs forum-scoped
+      MANAGE_THREADS, READ_MESSAGE_HISTORY, and MANAGE_CHANNELS for automatic
+      tag setup
     secret: true
-
-# Exactly the hooks register() registers — `plugins validate` fails on a
-# registered-but-undeclared hook. Every one is the same "poll now" kick (ADR-0002);
-# correctness lives in the durable task_events cursor, not here.
 provides_hooks:
   - kanban_task_claimed
   - kanban_task_completed
@@ -40,30 +35,35 @@ provides_hooks:
   - on_kanban_worker_exited
   - on_kanban_worker_stale_claim
   - on_kanban_dispatch_tick
-
 config_schema:
   board:
     type: str
-    default: ""
+    default: ''
     description: Board this instance serves. Empty means the current board.
   publisher_profile:
     type: str
-    default: ""
-    description: Exact profile allowed to publish. Empty keeps every loaded profile as a lease candidate.
+    default: ''
+    description: >-
+      Exact profile allowed to publish. Empty keeps every loaded profile as a
+      lease candidate.
   reply_on:
     type: list
     description: Event kinds that earn a reply in the thread.
   include_workspace_path:
     type: bool
     default: false
-    description: Publish the absolute workspace path on the card. Off by default (ADR-0011).
+    description: >-
+      Publish the absolute workspace path on the card. Off by default
+      (ADR-0011).
   discord_applied_tag_ids:
     type: list
     description: Forum tag ids applied to new posts. Required if the forum enforces tags.
   avatar_base_url:
     type: str
-    default: ""
-    description: HTTPS origin serving the generated static avatar bundle. Empty disables avatars.
+    default: ''
+    description: >-
+      HTTPS origin serving the generated static avatar bundle. Empty disables
+      avatars.
   avatar_theme:
     type: str
     default: duotone
@@ -82,12 +82,16 @@ config_schema:
     description: Heartbeat age after which a running task renders as stale.
   dashboard_url:
     type: str
-    default: ""
-    description: Task page URL; {task_id} and {board} placeholders. Use a stable name, never an IP — published links are frozen forever.
+    default: ''
+    description: >-
+      Task page URL; {task_id} and {board} placeholders. Use a stable name,
+      never an IP — published links are frozen forever.
   comment_excerpt_chars:
     type: int
     default: 180
-    description: Maximum comment characters published in replies. Set to 0 for author-only replies.
+    description: >-
+      Maximum comment characters published in replies. Set to 0 for author-only
+      replies.
   card_template:
     type: str
     description: Card body template. Falls back to the built-in on any error.
