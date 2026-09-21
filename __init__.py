@@ -145,7 +145,12 @@ def _build_consumer(ctx):
     from .kanban_task_threads.consumer import Consumer
     from .kanban_task_threads.runtime import RetryableStartup
     from .kanban_task_threads.store import StateStore
-    from .kanban_task_threads.transport import DiscordTransport, TransportError, urllib_http
+    from .kanban_task_threads.transport import (
+        DiscordTransport,
+        ForumTagSetupError,
+        TransportError,
+        urllib_http,
+    )
 
     try:
         from agent import secret_scope
@@ -184,10 +189,11 @@ def _build_consumer(ctx):
     )
 
     # Preflight. The channel is asked, never configured (ADR-0003): one credential,
-    # one source of truth. With a bot token the tag requirement is checked for
-    # real; without one, the consumer maps the create-time 400 to an
-    # actionable message instead. Only a Discord *rejection* of the credential
-    # is a config verdict; a 5xx/429 or a network error may heal.
+    # one source of truth. With a bot token the managed tag vocabulary is
+    # provisioned and the tag requirement is checked for real; without one,
+    # the consumer maps the create-time 400 to an actionable message instead.
+    # Only a Discord *rejection* of the credential or tag setup is a config
+    # verdict; a 5xx/429 or a network error may heal.
     try:
         info = transport.webhook_info()
         # Rebuild with the discovered forum id: the bot tag operations resolve
@@ -200,7 +206,11 @@ def _build_consumer(ctx):
             applied_tag_ids=tags,
             forum_channel_id=str(info["channel_id"]),
         )
-        requires_tag = transport.forum_requires_tag(str(info["channel_id"]))
+        if bot_token:
+            transport.prepare_forum()
+    except ForumTagSetupError as err:
+        logger.error("kanban-task-threads: %s. Plugin is inactive.", err)
+        return None
     except TransportError as err:
         if 400 <= err.status < 500 and err.status != 429:
             logger.error(
@@ -214,15 +224,6 @@ def _build_consumer(ctx):
         raise RetryableStartup(f"Discord preflight failed: {err}") from err
     except OSError as exc:  # URLError and socket timeouts are OSError
         raise RetryableStartup(f"network error during preflight: {exc!r}") from exc
-    if requires_tag and not tags:
-        logger.error(
-            "kanban-task-threads: forum %s requires a tag on every post and "
-            "discord_applied_tag_ids is empty — every create would 400. "
-            "Set discord_applied_tag_ids or drop the forum's tag requirement. "
-            "Plugin is inactive.",
-            info["channel_id"],
-        )
-        return None
 
     # State is board state (ADR-0005): a plugin-owned DB under the board-shared
     # kanban root — never ctx.state, which resolves per profile.

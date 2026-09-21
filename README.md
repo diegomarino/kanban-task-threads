@@ -25,14 +25,19 @@ freeze the first one forever (see [docs/transport.md](docs/transport.md)).
 - Optionally, the selected publisher profile's **existing Discord bot token**.
   Do not create a dedicated bot for this plugin. Its integration-managed role
   needs `View Channel`, `MANAGE_THREADS` (shown in Discord as **Manage Threads
-  and Posts**) and `READ_MESSAGE_HISTORY` for archived listing on that forum.
-  This unlocks title state, tags, archiving and metadata repair. The plugin works
-  without it and never requires it.
+  and Posts**), `READ_MESSAGE_HISTORY` for archived listing, and
+  `MANAGE_CHANNELS` (**Manage Channels**) to create missing status tags. Scope
+  both management permissions to this forum, not the whole server. This unlocks
+  title state, tags, archiving and metadata repair. The plugin works without a
+  bot token and never requires one.
 
 ![Discord role permission toggle labelled Manage Threads and Posts; this UI permission corresponds to the MANAGE_THREADS API permission](docs/assets/discord-manage-threads-and-posts.png)
 
 Discord creates and manages this integration role for the bot. Grant the
 permission to that role; it is not a role you manually assign to people.
+If you do not grant `Manage Channels`, create all managed tags manually before
+startup; the plugin will reuse them and will not need that permission while the
+full vocabulary remains present.
 
 ## Install
 
@@ -76,10 +81,17 @@ the forum after the board's slug (`#tasks-default`, `#tasks-web`), so a human
 reading the channel list can tell which board publishes where. One deployment
 serves one board; point each board's deployment at its own forum's webhook.
 
-> **Forums that require tags:** if your forum enforces a tag on every post,
-> set `discord_applied_tag_ids` — otherwise every post creation is rejected.
-> With a bot token the plugin detects this at startup and fails closed with an
-> actionable message; without one, the first rejected create explains it.
+> **Managed tags:** with a bot token, startup reuses or creates the exact forum
+> tags `triage`, `todo`, `scheduled`, `ready`, `running`, `blocked`,
+> `needs-human`, `review`, `done`, `archived`, and `failed`. Existing unrelated
+> tags are preserved. Discord permits at most 20 forum tags, so startup fails
+> clearly rather than deleting anything if the combined set will not fit.
+>
+> **Forums that require tags:** the bot path automatically uses managed
+> `triage` as the creation tag when no `discord_applied_tag_ids` override is
+> configured, then applies the task's real state. Webhook-only installations
+> must still set `discord_applied_tag_ids`, because a webhook cannot discover
+> or create forum tags.
 
 ## Configuration
 
@@ -91,7 +103,7 @@ All optional, under `plugins.entries.<id>.settings`:
 | `publisher_profile` | empty | Exact `ctx.profile_name` allowed to publish. Empty preserves the public/single-profile default: every loaded profile is a lease candidate and the board lease elects the active publisher. A value pins publication and gives up cross-profile failover |
 | `reply_on` | sensible set | Event kinds that earn a reply in the thread |
 | `include_workspace_path` | `false` | Publish the absolute workspace path on the card (see Privacy) |
-| `discord_applied_tag_ids` | `[]` | Forum tag ids applied to new posts |
+| `discord_applied_tag_ids` | `[]` | Optional creation-tag override. Required only for webhook-only operation in a forum that enforces a tag; bot mode otherwise bootstraps with managed `triage` |
 | `poll_seconds` | `20` | Seconds between passes when no hook kicks arrive |
 | `stale_after_seconds` | `600` | Heartbeat age after which a running task renders as stale |
 | `dashboard_url` | — | Task page URL; may contain `{task_id}` and `{board}`. Powers the card link and each reply's trailing `[#]` (without it, `[#]` jumps to the card in-app). **Links are forever**: every URL you publish is frozen in Discord permanently, so use a stable *name* that resolves from every device you click from — never an IP (the plugin warns on literal IPs), never anything discovered at boot |

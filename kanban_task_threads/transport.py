@@ -32,6 +32,21 @@ EMBED_DESCRIPTION_LIMIT = 4096
 # Not configurable (ADR-0006): correctness, not taste.
 _NO_MENTIONS = {"parse": []}
 
+_MANAGED_FORUM_TAG_NAMES = (
+    "triage",
+    "todo",
+    "scheduled",
+    "ready",
+    "running",
+    "blocked",
+    "needs-human",
+    "review",
+    "done",
+    "archived",
+    "failed",
+)
+_MAX_FORUM_TAGS = 20
+
 # The http seam: http(method, url, json_body_or_None, headers=None)
 #   -> (status, decoded_body)
 Http = Callable[..., tuple[int, dict]]
@@ -58,6 +73,10 @@ class TransportError(RuntimeError):
         super().__init__(f"transport call failed: HTTP {status} {body!r}")
         self.status = status
         self.body = body
+
+
+class ForumTagSetupError(RuntimeError):
+    """The forum cannot fit or authorize the plugin-owned status tags."""
 
 
 class Transport(Protocol):
@@ -91,6 +110,7 @@ class DiscordTransport:
         self._bot_token = bot_token
         self._applied_tag_ids = list(applied_tag_ids)
         self._forum_channel_id = forum_channel_id
+        self._forum_channel: dict | None = None
         self._tag_ids_by_name: dict | None = None  # fetched once, cached
 
     def capabilities(self) -> frozenset:
@@ -140,10 +160,10 @@ class DiscordTransport:
 
     def set_status_tag(self, ref: ThreadRef, name: str) -> bool | dict:
         """Apply the forum tag with this *name* to the thread (replacing any).
-        Names are resolved against the forum's own tag list, fetched once —
-        installers manage tags by name, ids stay Discord's business. Unknown
-        name: no-op returning False (a forum without the convention's tags is
-        degraded, not broken)."""
+        Names are resolved against the forum definition prepared at startup;
+        ids stay Discord's business. An unknown name is a no-op returning
+        False, which also protects a long-running process if an operator later
+        deletes a managed tag."""
         tag_id = self.status_tag_id(name)
         if tag_id is None:
             return False
@@ -200,18 +220,74 @@ class DiscordTransport:
             }
         return result
 
+    def prepare_forum(self) -> bool:
+        """Ensure the plugin-owned status vocabulary exists in the forum.
+
+        Existing tags are preserved byte-for-byte in the PATCH body. Missing
+        managed names are appended, then Discord's response becomes the
+        authoritative name-to-id cache. Returns whether the forum requires a
+        tag on every newly-created post.
+        """
+        try:
+            channel = self._get_forum_channel()
+        except TransportError as err:
+            if err.status == 403:
+                raise ForumTagSetupError(
+                    "Discord refused to read the forum; grant the bot View Channel on this forum"
+                ) from err
+            raise
+        existing = list(channel.get("available_tags", []))
+        existing_names = {str(tag.get("name")) for tag in existing}
+        missing = [name for name in _MANAGED_FORUM_TAG_NAMES if name not in existing_names]
+        if len(existing) + len(missing) > _MAX_FORUM_TAGS:
+            raise ForumTagSetupError(
+                "Discord forums allow at most 20 tags; "
+                f"{len(existing)} exist and {len(missing)} managed tags are missing"
+            )
+        if missing:
+            try:
+                channel = self._call(
+                    "PATCH",
+                    f"https://discord.com/api/v10/channels/{self._require_forum()}",
+                    {"available_tags": existing + [{"name": name} for name in missing]},
+                    headers=self._bot_headers(),
+                )
+            except TransportError as err:
+                if err.status == 403:
+                    raise ForumTagSetupError(
+                        "Discord refused to create the missing status tags; grant the bot "
+                        "Manage Channels on this forum or create the tags manually"
+                    ) from err
+                raise
+            self._cache_forum_channel(channel)
+        requires_tag = bool(channel.get("flags", 0) & 16)
+        if requires_tag and not self._applied_tag_ids:
+            triage_id = self.status_tag_id("triage")
+            if triage_id:
+                self._applied_tag_ids = [triage_id]
+        return requires_tag
+
     def _forum_tag_ids(self) -> dict:
         if self._tag_ids_by_name is None:
+            self._cache_forum_channel(self._get_forum_channel())
+        return self._tag_ids_by_name
+
+    def _get_forum_channel(self) -> dict:
+        if self._forum_channel is None:
             channel = self._call(
                 "GET",
                 f"https://discord.com/api/v10/channels/{self._require_forum()}",
                 None,
                 headers=self._bot_headers(),
             )
-            self._tag_ids_by_name = {
-                tag.get("name"): str(tag.get("id")) for tag in channel.get("available_tags", [])
-            }
-        return self._tag_ids_by_name
+            self._cache_forum_channel(channel)
+        return self._forum_channel
+
+    def _cache_forum_channel(self, channel: dict) -> None:
+        self._forum_channel = channel
+        self._tag_ids_by_name = {
+            str(tag.get("name")): str(tag.get("id")) for tag in channel.get("available_tags", [])
+        }
 
     def _bot_patch_thread(self, ref: ThreadRef, body: dict) -> bool | dict:
         response = self._call(
@@ -264,12 +340,11 @@ class DiscordTransport:
         (None) and the 400 on the first create is mapped instead."""
         if not self._bot_token:
             return None
-        channel = self._call(
-            "GET",
-            f"https://discord.com/api/v10/channels/{channel_id}",
-            None,
-            headers={"Authorization": f"Bot {self._bot_token}"},
-        )
+        if self._forum_channel_id is None:
+            self._forum_channel_id = str(channel_id)
+        elif str(channel_id) != self._require_forum():
+            raise RuntimeError("forum channel mismatch")
+        channel = self._get_forum_channel()
         return bool(channel.get("flags", 0) & 16)
 
     def _embed(self, card: Card) -> dict:

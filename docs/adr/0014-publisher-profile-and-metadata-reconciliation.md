@@ -36,13 +36,18 @@ change; the desired tag lands before a terminal thread is finally archived.
 Successful PATCH response fields are authoritative readback. SQLite
 `last_tag`/`thread_archived` remain cache hints, not claims of external truth.
 
-The status tag mapping is total when the forum provides the named tags:
+The status tag mapping is total. Bot-enabled startup reuses exact-name matches
+and creates any missing managed tags while preserving unrelated tags:
 `triage`, `todo`, `scheduled`, `ready`, `running`, `blocked`, `review`, `done`,
 and `archived` map to the same names; blocked `needs_input` maps to
 `needs-human`; stale maps to `failed`; dependency wait maps to `blocked`.
 These tags are plugin-owned filtering metadata, so manual edits may be
-overwritten. Configured creation tags remain the safety mechanism for forums
-that require a tag.
+overwritten. Creating missing forum tags requires `MANAGE_CHANNELS`; applying
+them requires `MANAGE_THREADS`. If the 20-tag limit would be exceeded, or the
+channel PATCH is forbidden, startup fails closed without deleting anything.
+When a forum requires a tag, bot mode uses managed `triage` for creation unless
+`discord_applied_tag_ids` explicitly overrides it; webhook-only mode still
+needs an explicit creation tag ID.
 
 Clean audits back off through 5, 15, 30, then 60 minutes (capped). Any repair
 schedules confirmation in one minute. A 429 honors `retry_after`; another
@@ -56,7 +61,9 @@ consumption. Timing and level are private process memory only.
   Discord bot token; this plugin neither invents nor provisions another bot.
 - The bot's integration-managed Discord role needs forum access,
   `MANAGE_THREADS` (UI: “Manage Threads and Posts”), and
-  `READ_MESSAGE_HISTORY` for archived listing.
+  `READ_MESSAGE_HISTORY` for archived listing. Automatic tag provisioning also
+  needs forum-scoped `MANAGE_CHANNELS`; manually creating the complete managed
+  vocabulary is the fallback.
 - Threads archived outside the active set and latest 25 public archived posts
   are deliberately outside automated repair until they re-enter that window.
 - Pinning is explicit and reversible by clearing `publisher_profile`, but a

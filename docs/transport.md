@@ -39,6 +39,7 @@ optional capability: detected, never required.
 | `append` | `POST {webhook}?wait=true&thread_id={thread_id}`, optional per-message `username` |
 | `webhook_info` | `GET {webhook}` — returns `channel_id`: the forum is asked, never configured |
 | `forum_requires_tag` | `GET /channels/{id}` with the bot token; `flags & 16` |
+| `prepare_forum` | bot: read `available_tags`; `PATCH /channels/{forum_id}` only when managed names are missing |
 | `set_status_tag` | bot: `PATCH /channels/{thread_id}` with `applied_tags`; tag names resolved against the forum's `available_tags`, fetched once |
 | `rename` / `set_archived` | bot: `PATCH /channels/{thread_id}` with `name` / `archived` |
 | `list_forum_threads` | bot: `GET /guilds/{guild_id}/threads/active`, filtered by forum, plus `GET /channels/{forum_id}/threads/archived/public?limit=25` |
@@ -51,15 +52,24 @@ channel bodies are authoritative readback; `last_tag` and `thread_archived`
 in SQLite are only traffic-saving hints.
 Without a bot token none of this runs and the plugin is complete anyway.
 
+Bot-enabled preflight owns the status-tag vocabulary, not the whole forum tag
+list. It preserves every existing tag and appends only missing canonical names.
+Changing the forum's `available_tags` requires `MANAGE_CHANNELS`; applying
+existing IDs to a thread requires `MANAGE_THREADS`. If all managed names already
+exist, no channel PATCH is sent and manual creation is a supported permission
+fallback. The operation fails closed before mutation when existing plus missing
+tags would exceed Discord's limit of 20.
+
 **The status tag owns `applied_tags` — a decided limitation.** Setting a
 status tag replaces the thread's whole tag set. The total mapping is
 `triage→triage`, `todo→todo`, `scheduled→scheduled`, `ready→ready`,
 `running→running`, `blocked+needs_input→needs-human`, other
 `blocked→blocked`, `review→review`, `done→done`, `archived→archived`,
 `stale→failed`, `dependency_wait→blocked`. What does *not* survive is a tag a
-human applied by hand: the next automated retag wipes it. Configured
-`discord_applied_tag_ids` still protect creation in a tag-required forum; a
-missing named status tag degrades without clearing that creation safety.
+human applied by hand: the next automated retag wipes it. In a tag-required
+forum, bot mode uses managed `triage` for creation when no explicit
+`discord_applied_tag_ids` override exists; webhook-only mode still requires an
+explicit ID.
 
 The audit is bounded, never a crawler: all active guild threads are read once
 and filtered to the forum, then only the latest 25 public archived forum

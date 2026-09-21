@@ -63,7 +63,7 @@ stateDiagram-v2
 | `kanban_task_threads/view.py` | Task row → flat dict of strings. Computes `stale`; gates `workspace_path` behind opt-in. | ADR-0001, ADR-0011 |
 | `kanban_task_threads/render.py` | View → `Card`; event payload → reply text. Status vocabulary, deterministic truncation, default templates. | ADR-0001, ADR-0006 |
 | `kanban_task_threads/templates.py` | `format_map` over flat scalars via a Formatter that rejects `.`/`[`/positional fields; fallback to trusted defaults. | ADR-0006 |
-| `kanban_task_threads/transport.py` | The seam (Protocol + capability constants), Discord writes/preflight, and bot bulk reads of active plus latest-25 archived thread metadata. `allowed_mentions: {"parse": []}` is hard-coded at the call site. | ADR-0003, ADR-0004, ADR-0007, ADR-0014 |
+| `kanban_task_threads/transport.py` | The seam (Protocol + capability constants), Discord writes/preflight including idempotent managed-tag setup, and bot bulk reads of active plus latest-25 archived thread metadata. `allowed_mentions: {"parse": []}` is hard-coded at the call site. | ADR-0003, ADR-0004, ADR-0007, ADR-0014 |
 | `kanban_task_threads/store.py` | Durable plugin-owned state in SQLite: cursor, task→post mapping, leases, tombstones, dead letters. | ADR-0005 |
 | `kanban_task_threads/consumer.py` | The loop: lease → scan `task_events` → per-task publish → cursor advance → due bounded metadata audit. Audit timing/level is private process memory; all failure policy lives here. | ADR-0007, ADR-0014 |
 
@@ -92,6 +92,9 @@ a hook kick collapses that wait.
   Secrets: `KANBAN_TASK_THREADS_WEBHOOK_URL`
   (required; in production an `op://` reference resolved by the profile env,
   never a literal) and `KANBAN_TASK_THREADS_BOT_TOKEN` (optional, ADR-0003 extras).
+  Bot mode reuses or creates its eleven status tags; automatic creation needs
+  `MANAGE_CHANNELS` scoped to the forum, while thread mutation needs
+  `MANAGE_THREADS`.
   If non-empty `publisher_profile` does not exactly match `ctx.profile_name`,
   registration returns inert before any of this; empty preserves ADR-0013.
 - **Startup classification**: a real config verdict (missing webhook in a
@@ -241,7 +244,7 @@ Things a fresh reader would otherwise lose an hour to:
 
 | Layer | Command | Proves |
 |---|---|---|
-| Unit | `./scripts/sandbox test` | rendering, truncation, template rejection, store CAS/lease/fencing, consumer failure policy, profile pinning, bulk metadata parsing/repair/backoff, runtime lifecycle, startup classification, entry-point contract |
+| Unit | `./scripts/sandbox test` | rendering, truncation, template rejection, store CAS/lease/fencing, consumer failure policy, profile pinning, tag provisioning/limits, bulk metadata parsing/repair/backoff, runtime lifecycle, startup classification, entry-point contract |
 | Runtime load | `./scripts/sandbox doctor` | `register()` loads in the real Hermes (8 hooks), offline |
 | End-to-end sans Discord | `./scripts/sandbox task && ./scripts/sandbox consume` | real event rows → one post, replies in order, durable cursor |
 | Live, bounded | `scripts/live_run.py` (explicit authorization each time) | the real consumer against the test forum: one pass, observe, stop. Run 2026-09-20: 1 post, 5 replies, 1 edit; second run silent. |

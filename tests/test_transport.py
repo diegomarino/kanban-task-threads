@@ -12,6 +12,7 @@ from kanban_task_threads.transport import (
     CAP_TAGS,
     CAP_TITLE_STATE,
     DiscordTransport,
+    ForumTagSetupError,
     ThreadRef,
     TransportError,
 )
@@ -166,6 +167,161 @@ def test_forum_without_flag_16_does_not_require_tags():
     http = FakeHttp()
     http.queue(200, {"id": "777", "flags": 0})
     assert make(http, bot_token="x").forum_requires_tag("777") is False
+
+
+def test_prepare_forum_creates_only_missing_managed_tags_and_caches_response():
+    http = FakeHttp()
+    existing = [
+        {
+            "id": "custom-1",
+            "name": "customer",
+            "moderated": False,
+            "emoji_id": None,
+            "emoji_name": "✨",
+        },
+        {
+            "id": "tag-1",
+            "name": "triage",
+            "moderated": False,
+            "emoji_id": None,
+            "emoji_name": None,
+        },
+    ]
+    http.queue(200, {"id": "777", "flags": 0, "available_tags": existing})
+    created_names = [
+        "todo",
+        "scheduled",
+        "ready",
+        "running",
+        "blocked",
+        "needs-human",
+        "review",
+        "done",
+        "archived",
+        "failed",
+    ]
+    resulting_tags = existing + [
+        {"id": f"new-{index}", "name": name} for index, name in enumerate(created_names, start=1)
+    ]
+    http.queue(200, {"id": "777", "flags": 0, "available_tags": resulting_tags})
+
+    transport = bot(http)
+    assert transport.prepare_forum() is False
+
+    assert http.calls == [
+        ("GET", "https://discord.com/api/v10/channels/777", None),
+        (
+            "PATCH",
+            "https://discord.com/api/v10/channels/777",
+            {"available_tags": existing + [{"name": name} for name in created_names]},
+        ),
+    ]
+    assert transport.status_tag_id("done") == "new-8"
+    assert len(http.calls) == 2
+
+
+def test_prepare_forum_does_not_patch_when_all_managed_tags_exist():
+    http = FakeHttp()
+    names = [
+        "triage",
+        "todo",
+        "scheduled",
+        "ready",
+        "running",
+        "blocked",
+        "needs-human",
+        "review",
+        "done",
+        "archived",
+        "failed",
+    ]
+    http.queue(
+        200,
+        {
+            "id": "777",
+            "flags": 16,
+            "available_tags": [
+                {"id": f"tag-{index}", "name": name} for index, name in enumerate(names, start=1)
+            ],
+        },
+    )
+
+    assert bot(http).prepare_forum() is True
+    assert [call[0] for call in http.calls] == ["GET"]
+
+
+def test_prepare_forum_fails_before_patch_when_managed_tags_exceed_discord_limit():
+    http = FakeHttp()
+    http.queue(
+        200,
+        {
+            "id": "777",
+            "flags": 0,
+            "available_tags": [
+                {"id": f"custom-{index}", "name": f"custom-{index}"} for index in range(10)
+            ],
+        },
+    )
+
+    with pytest.raises(ForumTagSetupError, match="20"):
+        bot(http).prepare_forum()
+    assert [call[0] for call in http.calls] == ["GET"]
+
+
+def test_prepare_forum_turns_missing_manage_channels_into_actionable_error():
+    http = FakeHttp()
+    http.queue(200, {"id": "777", "flags": 0, "available_tags": []})
+    http.queue(403, {"message": "Missing Permissions", "code": 50013})
+
+    with pytest.raises(ForumTagSetupError, match="Manage Channels"):
+        bot(http).prepare_forum()
+
+
+def test_prepare_forum_turns_missing_forum_access_into_actionable_error():
+    http = FakeHttp()
+    http.queue(403, {"message": "Missing Access", "code": 50001})
+
+    with pytest.raises(ForumTagSetupError, match="View Channel"):
+        bot(http).prepare_forum()
+
+
+def test_required_forum_uses_managed_triage_tag_for_creation_when_no_default_is_set():
+    http = FakeHttp()
+    http.queue(
+        200,
+        {
+            "id": "777",
+            "flags": 16,
+            "available_tags": [{"id": "triage-id", "name": "triage"}],
+        },
+    )
+    http.queue(
+        200,
+        {
+            "id": "777",
+            "flags": 16,
+            "available_tags": [
+                {"id": "triage-id", "name": "triage"},
+                {"id": "todo-id", "name": "todo"},
+                {"id": "scheduled-id", "name": "scheduled"},
+                {"id": "ready-id", "name": "ready"},
+                {"id": "running-id", "name": "running"},
+                {"id": "blocked-id", "name": "blocked"},
+                {"id": "needs-human-id", "name": "needs-human"},
+                {"id": "review-id", "name": "review"},
+                {"id": "done-id", "name": "done"},
+                {"id": "archived-id", "name": "archived"},
+                {"id": "failed-id", "name": "failed"},
+            ],
+        },
+    )
+    http.queue(200, {"id": "900", "channel_id": "901"})
+    transport = bot(http)
+
+    assert transport.prepare_forum() is True
+    transport.open_thread(title="fix", card=CARD)
+
+    assert http.calls[-1][2]["applied_tags"] == ["triage-id"]
 
 
 # --- bot-token extras (ADR-0003): title state, tags, archiving --------------------

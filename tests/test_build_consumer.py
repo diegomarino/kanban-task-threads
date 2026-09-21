@@ -102,13 +102,40 @@ def test_rejected_webhook_is_a_config_verdict(entry):
     assert module._build_consumer(FakeCtx()) is None
 
 
-def test_tag_required_without_tags_is_a_config_verdict(entry):
+def test_bot_preflight_provisions_tags_for_a_required_forum(entry):
     http = FakeHttp()
     http.queue(200, {"id": "1", "channel_id": "7", "name": "taskz"})
-    http.queue(200, {"id": "7", "flags": 16})
+    http.queue(200, {"id": "7", "flags": 16, "available_tags": []})
+    http.queue(
+        200,
+        {
+            "id": "7",
+            "flags": 16,
+            "available_tags": [
+                {"id": f"tag-{index}", "name": name}
+                for index, name in enumerate(
+                    [
+                        "triage",
+                        "todo",
+                        "scheduled",
+                        "ready",
+                        "running",
+                        "blocked",
+                        "needs-human",
+                        "review",
+                        "done",
+                        "archived",
+                        "failed",
+                    ],
+                    start=1,
+                )
+            ],
+        },
+    )
     secrets = dict(WEBHOOK, KANBAN_TASK_THREADS_BOT_TOKEN="bot")
     module = entry(secrets, http=http)
-    assert module._build_consumer(FakeCtx()) is None
+    assert module._build_consumer(FakeCtx()) is not None
+    assert [call[0] for call in http.calls] == ["GET", "GET", "PATCH"]
 
 
 def test_bot_token_wiring_can_resolve_forum_tags(entry):
@@ -118,12 +145,36 @@ def test_bot_token_wiring_can_resolve_forum_tags(entry):
 
     http = FakeHttp()
     http.queue(200, {"id": "1", "channel_id": "7", "name": "taskz"})  # webhook_info
-    http.queue(200, {"id": "7", "flags": 0})  # forum_requires_tag
+    http.queue(
+        200,
+        {
+            "id": "7",
+            "flags": 0,
+            "available_tags": [
+                {"id": f"tag-{index}", "name": name}
+                for index, name in enumerate(
+                    [
+                        "triage",
+                        "todo",
+                        "scheduled",
+                        "ready",
+                        "running",
+                        "blocked",
+                        "needs-human",
+                        "review",
+                        "done",
+                        "archived",
+                        "failed",
+                    ],
+                    start=1,
+                )
+            ],
+        },
+    )
     secrets = dict(WEBHOOK, KANBAN_TASK_THREADS_BOT_TOKEN="bot")
     module = entry(secrets, http=http)
     consumer = module._build_consumer(FakeCtx())
     transport_mod = importlib.import_module("ktt_entry.kanban_task_threads.transport")
-    http.queue(200, {"id": "7", "available_tags": [{"id": "5", "name": "done"}]})
     http.queue(200, {})
     ref = transport_mod.ThreadRef(thread_id="901", message_id="900")
     assert consumer._transport.set_status_tag(ref, "done") is True

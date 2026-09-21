@@ -49,8 +49,19 @@ sessions from a module nobody can reach anymore.
 The token authenticates the bot; authorization comes from its
 integration-managed Discord role. That role needs access to the forum,
 `MANAGE_THREADS` (Discord UI: **Manage Threads and Posts**) and
-`READ_MESSAGE_HISTORY` so the latest archived posts can be listed. This role
-belongs to the integration and is not manually assigned to people.
+`READ_MESSAGE_HISTORY` so the latest archived posts can be listed. Automatic
+status-tag setup additionally needs `MANAGE_CHANNELS` (**Manage Channels**) on
+that forum. Scope both management permissions to the forum rather than the
+whole server. This role belongs to the integration and is not manually assigned
+to people.
+
+At bot-enabled startup the plugin reads the forum's `available_tags`, preserves
+every existing tag, and appends only missing managed names. A successful PATCH
+response supplies the IDs used thereafter. If the combined set would exceed
+Discord's 20-tag limit, or Discord rejects the PATCH because `Manage Channels`
+is absent, startup fails closed with an actionable message. Operators who do
+not grant that permission may create the complete vocabulary manually; no
+PATCH is issued when every managed name already exists.
 
 Both are resolved through Hermes' profile-aware secret scope rather than read
 directly from the process environment, so they resolve per profile. Ship them
@@ -97,13 +108,13 @@ One credential, one source of truth: the forum channel id is never configured
 — `GET` on the webhook returns the webhook object, whose `channel_id` *is* the
 forum it posts to. The two cannot disagree because only one exists.
 
-With a bot token, the plugin also reads the channel and checks `flags & 16`
-(tag required): if the forum demands a tag and `discord_applied_tag_ids` is
-empty, it fails closed at startup with a message that says exactly what to
-set. Without a bot token that flag is unreadable, so the equivalent
-create-time 400 (Discord error 40067) is mapped to the same actionable text in
-the dead-letter detail. Same answer, delivered at the earliest moment each
-credential level allows.
+With a bot token, the plugin also reads the channel, provisions the managed tag
+vocabulary, and checks `flags & 16` (tag required). If the forum demands a tag
+and `discord_applied_tag_ids` is empty, managed `triage` is used for creation;
+normal maintenance immediately applies the task's real state. Without a bot
+token the flag and tag IDs are unreadable, so a tag-required forum still needs
+an explicit `discord_applied_tag_ids`; Discord error 40067 is mapped to that
+actionable instruction at create time.
 
 ## Settings
 

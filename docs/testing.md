@@ -7,7 +7,7 @@ each proving what the previous one cannot:
 
 | Layer | Command | Needs | Proves | Cannot reach |
 |---|---|---|---|---|
-| Unit | `./scripts/sandbox test` | uv | rendering, truncation, template rejection, store CAS/lease/fencing, consumer failure policy, profile pinning, bulk metadata parsing/repair/backoff, runtime lifecycle, startup classification, entry-point contract | Hermes |
+| Unit | `./scripts/sandbox test` | uv | rendering, truncation, template rejection, store CAS/lease/fencing, consumer failure policy, profile pinning, tag provisioning/limits, bulk metadata parsing/repair/backoff, runtime lifecycle, startup classification, entry-point contract | Hermes |
 | Runtime load | `./scripts/sandbox doctor` | hermes | `register()` loads through the real plugin loader (temp home, sockets blocked) | the network |
 | End-to-end, no network | `./scripts/sandbox task && ./scripts/sandbox consume` | hermes | real event rows → one post, replies in order, durable cursor (second run silent), via a console transport | Discord |
 | Live, bounded | `scripts/live_run.py` | a test forum's webhook | the real webhook path: create, in-place edit, reply | — |

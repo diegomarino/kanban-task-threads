@@ -25,7 +25,7 @@ requires_env:
     secret: true
 optional_env:
   - name: KANBAN_TASK_THREADS_BOT_TOKEN
-    description: Optional existing publisher bot token; role needs forum access, MANAGE_THREADS, and READ_MESSAGE_HISTORY
+    description: Optional existing publisher bot token; role needs forum-scoped MANAGE_THREADS, READ_MESSAGE_HISTORY, and MANAGE_CHANNELS for automatic tag setup
     secret: true
 
 # Exactly the hooks register() registers — `plugins validate` fails on a
