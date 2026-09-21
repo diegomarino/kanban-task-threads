@@ -5,6 +5,18 @@ Format: [Keep a Changelog](https://keepachangelog.com); versioning: semver,
 SQLite schema) always describe the migration in their notes — columns are
 added in place, idempotently; deployed state files are never recreated.
 
+## [0.3.0](https://github.com/diegomarino/kanban-task-threads/compare/v0.2.3...v0.3.0) (2026-09-21)
+
+
+### Features
+
+* **discord:** add themed webhook avatars ([#6](https://github.com/diegomarino/kanban-task-threads/issues/6)) ([5634821](https://github.com/diegomarino/kanban-task-threads/commit/56348214efef2440a0db9753cffb45bafc50a1ae))
+
+
+### Bug Fixes
+
+* **discord:** reconcile and provision forum metadata ([#4](https://github.com/diegomarino/kanban-task-threads/issues/4)) ([22161ca](https://github.com/diegomarino/kanban-task-threads/commit/22161cafde30dcf76e880be7b99392a6d67732b8))
+
 ## [Unreleased]
 
 ### Added
