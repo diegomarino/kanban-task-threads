@@ -116,13 +116,22 @@ def test_pages_manifest_is_the_published_copy_of_the_render_manifest():
 def test_pages_workflow_uses_the_official_actions_and_read_only_checkout():
     root = __import__("pathlib").Path(__file__).resolve().parents[1]
     workflow = (root / ".github" / "workflows" / "deploy-avatar-pages.yml").read_text()
+    uses_lines = [line.strip() for line in workflow.splitlines() if "uses:" in line]
 
     assert "contents: read" in workflow
     assert "pages: write" in workflow
     assert "id-token: write" in workflow
-    assert "actions/configure-pages@v5" in workflow
-    assert "actions/upload-pages-artifact@v4" in workflow
-    assert "actions/deploy-pages@v4" in workflow
+    pinned_actions = {
+        ("checkout", "d23441a48e516b6c34aea4fa41551a30e30af803", "v6.1.0"),
+        ("configure-pages", "983d7736d9b0ae728b81ab479565c72886d7745b", "v5.0.0"),
+        ("upload-pages-artifact", "7b1f4a764d45c48632c6b24a0339c27f5614fb0b", "v4.0.0"),
+        ("deploy-pages", "d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e", "v4.0.5"),
+    }
+    expected_actions = {
+        f"uses: actions/{action}@{sha} # {version}" for action, sha, version in pinned_actions
+    }
+    assert expected_actions == set(uses_lines)
+    assert all("@v" not in line for line in uses_lines)
     assert "path: pages" in workflow
     assert "contents: write" not in workflow
 
