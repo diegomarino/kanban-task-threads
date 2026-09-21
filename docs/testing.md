@@ -7,7 +7,7 @@ each proving what the previous one cannot:
 
 | Layer | Command | Needs | Proves | Cannot reach |
 |---|---|---|---|---|
-| Unit | `./scripts/sandbox test` | uv | rendering, truncation, template rejection, store CAS/lease/fencing, consumer failure policy, profile pinning, tag provisioning/limits, bulk metadata parsing/repair/backoff, runtime lifecycle, startup classification, entry-point contract | Hermes |
+| Unit | `./scripts/sandbox test` | uv | rendering, truncation, avatar URL/config/payload/asset completeness, template rejection, store CAS/lease/fencing, consumer failure policy, profile pinning, tag provisioning/limits, bulk metadata parsing/repair/backoff, runtime lifecycle, startup classification, entry-point contract | Hermes |
 | Runtime load | `./scripts/sandbox doctor` | hermes | `register()` loads through the real plugin loader (temp home, sockets blocked) | the network |
 | End-to-end, no network | `./scripts/sandbox task && ./scripts/sandbox consume` | hermes | real event rows → one post, replies in order, durable cursor (second run silent), via a console transport | Discord |
 | Live, bounded | `scripts/live_run.py` | a test forum's webhook | the real webhook path: create, in-place edit, reply | — |
@@ -49,6 +49,8 @@ were written, on purpose:
 - cards never carry `username` (the signature rule; the tempting "fix" builds
   the frozen-assignee bug),
 - every call body carries `allowed_mentions: {"parse": []}`,
+- checked-in avatar assets exactly cover all 12 message types in all 3 themes
+  and all 3 opinionated palettes, and are 96 px PNGs,
 - the manifest's `provides_hooks` equals exactly what `register()` registers
   (`validate` fails on drift),
 - every registered hook callback accepts arbitrary `**kwargs` (`doctor` errors

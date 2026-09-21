@@ -51,6 +51,15 @@ def test_lifecycle_opens_once_replies_and_refreshes_card(board, parts):
     assert not report.errors
 
 
+def test_reply_event_kinds_drive_avatar_selection(board, parts):
+    _, transport, consumer = parts
+    walk_lifecycle(board)
+
+    consumer.run_once(now=NOW)
+
+    assert transport.message_types == ["commented", "blocked", "unblocked", "completed"]
+
+
 def test_reply_texts_carry_the_payload(board, parts):
     _, transport, consumer = parts
     walk_lifecycle(board)

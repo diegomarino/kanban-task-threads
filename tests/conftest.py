@@ -88,6 +88,7 @@ class FakeTransport:
 
     def __init__(self, capabilities=None):
         self.calls = []
+        self.message_types = []
         self.errors = {}  # op name -> list of exceptions to raise, in order
         self._n = 0
         self._capabilities = frozenset(
@@ -159,8 +160,9 @@ class FakeTransport:
         self.calls.append(("edit_card", ref, card))
         self._maybe_raise("edit_card")
 
-    def append(self, ref, *, content, username=None):
+    def append(self, ref, *, content, username=None, message_type="default"):
         self.calls.append(("append", ref, content, username))
+        self.message_types.append(message_type)
         self._maybe_raise("append")
         self._n += 1
         return f"msg{self._n}"

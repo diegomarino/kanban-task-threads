@@ -7,6 +7,17 @@ added in place, idempotently; deployed state files are never recreated.
 
 ## [Unreleased]
 
+### Added
+- Optional 96 px Phosphor message avatars for the starter and every reply
+  event type, with global `duotone`/`fill`/`bold` themes and opinionated
+  `colored`/`black`/`white` palettes. A versioned manifest and official GitHub
+  Pages workflow publish the static bundle (ADR-0015); the runtime adds no
+  message images, attachments, remote manifest fetches, or mutable upstream
+  hotlinks. To prevent Discord grouping different avatars under one header,
+  enabled replies use `{profile_id} · {message_type}` (or
+  `system · {message_type}` when unsigned), bounded to Discord's 80-character
+  webhook-name limit without truncating the message type.
+
 ## [0.2.3] — 2026-09-21
 
 ### Fixed

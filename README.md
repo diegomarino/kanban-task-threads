@@ -9,6 +9,12 @@ thread answers *"how did we get here?"*.
 actor-signed log — a block raised, a human approving vault access, the
 rotation, completion](docs/assets/forum-demo.png)
 
+Webhook replies can also carry a Phosphor avatar selected by message type:
+
+![Discord preview of the approved Phosphor message-state avatars: default,
+commented, blocked, unblocked, review requested, changes requested, completed,
+gave up, crashed, timed out, reclaimed and archived](docs/assets/webhook-avatar-preview.png)
+
 The card re-renders from board state on every change (status, block reason,
 assignee, prerequisites, elapsed time via Discord's live `<t:…:R>` timestamps).
 Each reply is signed with the profile that caused it. The card itself is
@@ -104,6 +110,9 @@ All optional, under `plugins.entries.<id>.settings`:
 | `reply_on` | sensible set | Event kinds that earn a reply in the thread |
 | `include_workspace_path` | `false` | Publish the absolute workspace path on the card (see Privacy) |
 | `discord_applied_tag_ids` | `[]` | Optional creation-tag override. Required only for webhook-only operation in a forum that enforces a tag; bot mode otherwise bootstraps with managed `triage` |
+| `avatar_base_url` | — | HTTPS origin of the generated static avatar bundle; blank keeps avatars off |
+| `avatar_theme` | `duotone` | Global Phosphor weight: `duotone`, `fill`, or `bold` |
+| `avatar_palette` | `colored` | Opinionated global palette: `colored`, `black`, or `white` |
 | `poll_seconds` | `20` | Seconds between passes when no hook kicks arrive |
 | `stale_after_seconds` | `600` | Heartbeat age after which a running task renders as stale |
 | `dashboard_url` | — | Task page URL; may contain `{task_id}` and `{board}`. Powers the card link and each reply's trailing `[#]` (without it, `[#]` jumps to the card in-app). **Links are forever**: every URL you publish is frozen in Discord permanently, so use a stable *name* that resolves from every device you click from — never an IP (the plugin warns on literal IPs), never anything discovered at boot |
@@ -115,6 +124,60 @@ attribute/index traversal is rejected) and fall back to the built-ins on any
 error. What is *not* configurable, by design: which events publish, when the
 card re-renders, idempotency, retry policy, truncation, and
 `allowed_mentions: {"parse": []}` on every call.
+
+### Message avatars
+
+Avatars are author identity, not message media: the plugin sets Discord's
+`avatar_url` when creating the starter or a reply. It does not add attachment
+images, embed thumbnails, or image embeds. The starter always uses `default`;
+replies cover `commented`, `blocked`, `unblocked`, `review_requested`,
+`changes_requested`, `completed`, `gave_up`, `crashed`, `timed_out`,
+`reclaimed`, and `archived`. Unknown future kinds fall back to `default`.
+
+Discord may visually group consecutive webhook messages that have the same
+username even when their `avatar_url` differs. With avatars enabled, reply
+identities therefore include the type: `{profile_id} · {message_type}` (for
+example, `profile_wester · blocked`). Events without an attributable actor use
+`system · {message_type}`. This keeps every type's avatar visible while
+preserving the real profile id whenever it fits. Discord caps webhook names at
+80 characters, so an unusually long profile id is marked with `…` and shortened
+just enough to retain the complete message type. When avatars are disabled,
+usernames remain unchanged and system observations continue using the webhook's
+own identity.
+
+The repository includes 96 px PNGs for all three themes and palettes under
+`pages/v1/`, plus their Phosphor 2.1.1 SVG sources, render manifest, and license
+under `assets/avatars/`. `colored` is the approved semantic palette; `black`
+uses a black glyph on a white circle and `white` uses a white glyph on a black
+circle. Phosphor's native 20% duotone layer produces the secondary grey without
+inventing a second icon color. Each published version also carries the Phosphor
+MIT notice beside its manifest.
+
+The checked-in workflow publishes `pages/` with GitHub's official Pages actions
+when that directory changes on `main`. Enable **GitHub Actions** as the Pages
+source once in repository settings, let the workflow deploy, verify a PNG, then
+configure the site root:
+
+```yaml
+avatar_base_url: https://example.github.io/kanban-task-threads
+avatar_theme: duotone
+avatar_palette: colored
+```
+
+The local and published manifests define the path contract
+`v1/{theme}/{palette}/96px/{message_type}.png`; the runtime reads the local copy
+and never fetches configuration from Pages. A significant visual redesign bumps
+the manifest to `v2` and keeps `v1` checked in. The renderer requires
+`rsvg-convert` and performs no network access:
+
+```bash
+python3 scripts/render_avatars.py
+```
+
+Do not point `avatar_base_url` at a mutable branch or third-party icon URL. The
+runtime never hotlinks Phosphor, uploads assets, probes the origin, or creates
+hidden Discord messages to host files. See
+[ADR-0015](docs/adr/0015-static-avatar-assets.md).
 
 ## Privacy and egress — read before enabling
 

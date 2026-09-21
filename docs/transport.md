@@ -13,7 +13,7 @@ implemented (ADR-0004). The seam exists to keep a second transport
 capabilities() -> frozenset          # what this transport can do
 open_thread(*, title, card) -> ThreadRef
 edit_card(ref, card) -> None
-append(ref, *, content, username=None) -> str
+append(ref, *, content, username=None, message_type="default") -> str
 ```
 
 `set_title` and `archive` are named as capabilities (`title_state`, `tags`)
@@ -91,6 +91,25 @@ Two rules are enforced *inside* the transport so no caller can forget them:
   output. Not configurable.
 - **Deterministic truncation** to Discord's limits before sending (2000
   content / 4096 embed description / 100 thread title, cut marked with `…`).
+
+When configured, `open_thread` adds the static `default` `avatar_url` and
+`append` selects one from `message_type`. `edit_card` never sends `avatar_url`:
+Discord's Edit Webhook Message parameters do not include it, and the author
+identity is frozen at create time. The URL points to an operator-hosted static
+bundle (ADR-0015); no avatar is an attachment, embed image, or mutable upstream
+hotlink.
+
+Discord exposes no API flag that forces a new visual author group, and clients
+may coalesce consecutive webhook messages with the same username even when the
+avatar URL changes. Avatar-enabled replies therefore override the visible
+username as `{profile_id} · {message_type}`. If the core deliberately supplies
+no actor (system observations and unknown actors), Discord receives
+`system · {message_type}` rather than a false profile attribution. Without an
+avatar set, the transport preserves the original profile username or omits the
+field so the webhook keeps its institutional identity. The typed identity is
+bounded to Discord's 80-character webhook-name limit: the complete message type
+is retained and only an overlong profile id is shortened, with `…` marking the
+cut.
 
 ## Platform facts that cost an hour each to learn
 
