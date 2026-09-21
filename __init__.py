@@ -85,6 +85,14 @@ def register(ctx):
     The validate probe uses a stub context, so no I/O may happen synchronously
     or before the thread's first poll interval.
     """
+    publisher_profile = str(ctx.get_config("publisher_profile", "") or "")
+    profile_name = str(getattr(ctx, "profile_name", "") or "")
+    if publisher_profile and profile_name != publisher_profile:
+        # Explicit pinning opts out of ADR-0013's all-profile candidacy. Keep
+        # this profile completely inert: no Runtime, hooks, unload callback,
+        # secret resolution, database access, or network work.
+        return
+
     from .kanban_task_threads.runtime import Runtime
 
     profile_context = contextvars.copy_context()

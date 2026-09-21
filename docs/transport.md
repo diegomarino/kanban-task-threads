@@ -41,21 +41,34 @@ optional capability: detected, never required.
 | `forum_requires_tag` | `GET /channels/{id}` with the bot token; `flags & 16` |
 | `set_status_tag` | bot: `PATCH /channels/{thread_id}` with `applied_tags`; tag names resolved against the forum's `available_tags`, fetched once |
 | `rename` / `set_archived` | bot: `PATCH /channels/{thread_id}` with `name` / `archived` |
+| `list_forum_threads` | bot: `GET /guilds/{guild_id}/threads/active`, filtered by forum, plus `GET /channels/{forum_id}/threads/archived/public?limit=25` |
 
-The three bot operations are what the `title_state`/`tags` capabilities
-unlock: the consumer keeps tag-per-status (the six-name convention: running,
-needs-human, blocked, review, done, failed), renames after title edits, and
-archives done tasks — each PATCHed only on change, tracked in the state store.
+The bot operations are what the `title_state`/`tags` capabilities unlock: the
+consumer keeps one plugin-owned tag for every status, renames after title
+edits, archives done/archived tasks, and audits Discord's actual metadata.
+Normal task events still PATCH their own thread immediately. Successful PATCH
+channel bodies are authoritative readback; `last_tag` and `thread_archived`
+in SQLite are only traffic-saving hints.
 Without a bot token none of this runs and the plugin is complete anyway.
 
 **The status tag owns `applied_tags` — a decided limitation.** Setting a
-status tag replaces the thread's whole tag set, and reverting to an untagged
-state restores the creation defaults (`discord_applied_tag_ids`), so a
-tag-required forum stays satisfied. What does *not* survive is a tag a human
-applied by hand: the next automated retag wipes it. If manual thread tags
-matter in your forum, keep them as the required creation tags or accept the
-loss — merging human and automated tags would need a read-modify-write per
-retag and an ownership convention that does not exist.
+status tag replaces the thread's whole tag set. The total mapping is
+`triage→triage`, `todo→todo`, `scheduled→scheduled`, `ready→ready`,
+`running→running`, `blocked+needs_input→needs-human`, other
+`blocked→blocked`, `review→review`, `done→done`, `archived→archived`,
+`stale→failed`, `dependency_wait→blocked`. What does *not* survive is a tag a
+human applied by hand: the next automated retag wipes it. Configured
+`discord_applied_tag_ids` still protect creation in a tag-required forum; a
+missing named status tag degrades without clearing that creation safety.
+
+The audit is bounded, never a crawler: all active guild threads are read once
+and filtered to the forum, then only the latest 25 public archived forum
+threads are read. Plugin-owned posts in that set are compared with current
+board state. It unarchives before changing an archived tag, applies the tag
+before final archive, and PATCHes only mismatches. Clean audits back off 5m,
+15m, 30m, then 60m capped; a repair confirms in 1m. A 429 honors
+`retry_after`; other failures are warned and retried without blocking normal
+event consumption. Schedule state exists only in consumer memory.
 
 Two rules are enforced *inside* the transport so no caller can forget them:
 

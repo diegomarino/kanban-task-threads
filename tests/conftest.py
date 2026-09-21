@@ -93,6 +93,8 @@ class FakeTransport:
         self._capabilities = frozenset(
             capabilities or {"rich_card", "live_timestamps", "per_message_identity"}
         )
+        self.thread_inventory = {}
+        self.status_tag_ids = {}
 
     def queue_error(self, op, exc):
         self.errors.setdefault(op, []).append(exc)
@@ -107,6 +109,10 @@ class FakeTransport:
     def set_status_tag(self, ref, name):
         self.calls.append(("set_status_tag", ref, name))
         self._maybe_raise("set_status_tag")
+        tag_id = self.status_tag_id(name)
+        if ref.thread_id in self.thread_inventory and tag_id is not None:
+            self.thread_inventory[ref.thread_id]["applied_tags"] = (tag_id,)
+            return dict(self.thread_inventory[ref.thread_id])
         return True
 
     def clear_status_tag(self, ref):
@@ -116,10 +122,23 @@ class FakeTransport:
     def rename(self, ref, name):
         self.calls.append(("rename", ref, name))
         self._maybe_raise("rename")
+        return None
 
     def set_archived(self, ref, archived):
         self.calls.append(("set_archived", ref, archived))
         self._maybe_raise("set_archived")
+        if ref.thread_id in self.thread_inventory:
+            self.thread_inventory[ref.thread_id]["archived"] = archived
+            return dict(self.thread_inventory[ref.thread_id])
+        return None
+
+    def status_tag_id(self, name):
+        return self.status_tag_ids.get(name, name)
+
+    def list_forum_threads(self, guild_id):
+        self.calls.append(("list_forum_threads", guild_id))
+        self._maybe_raise("list_forum_threads")
+        return {thread_id: dict(metadata) for thread_id, metadata in self.thread_inventory.items()}
 
     def open_thread(self, *, title, card):
         from kanban_task_threads.transport import ThreadRef

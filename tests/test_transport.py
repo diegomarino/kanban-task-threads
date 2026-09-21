@@ -234,6 +234,69 @@ def test_set_archived_patches_the_thread():
     assert http.calls[0][2] == {"archived": True}
 
 
+def test_bulk_thread_listing_parses_and_filters_active_and_latest_archived():
+    http = FakeHttp()
+    http.queue(
+        200,
+        {
+            "threads": [
+                {
+                    "id": "active-here",
+                    "parent_id": "777",
+                    "applied_tags": ["todo"],
+                    "thread_metadata": {"archived": False},
+                },
+                {
+                    "id": "active-elsewhere",
+                    "parent_id": "888",
+                    "applied_tags": ["other"],
+                    "thread_metadata": {"archived": False},
+                },
+            ]
+        },
+    )
+    http.queue(
+        200,
+        {
+            "threads": [
+                {
+                    "id": "archived-here",
+                    "parent_id": "777",
+                    "applied_tags": ["done"],
+                    "thread_metadata": {"archived": True},
+                }
+            ]
+        },
+    )
+
+    threads = bot(http).list_forum_threads("guild-9")
+
+    assert threads == {
+        "active-here": {"applied_tags": ("todo",), "archived": False},
+        "archived-here": {"applied_tags": ("done",), "archived": True},
+    }
+    assert [(method, url) for method, url, _ in http.calls] == [
+        ("GET", "https://discord.com/api/v10/guilds/guild-9/threads/active"),
+        ("GET", "https://discord.com/api/v10/channels/777/threads/archived/public?limit=25"),
+    ]
+
+
+def test_bot_patch_returns_thread_metadata_as_authoritative_readback():
+    http = FakeHttp()
+    http.queue(
+        200,
+        {
+            "id": "901",
+            "applied_tags": ["5"],
+            "thread_metadata": {"archived": True},
+        },
+    )
+    assert bot(http).set_archived(ThreadRef("901", "900"), True) == {
+        "applied_tags": ("5",),
+        "archived": True,
+    }
+
+
 def test_bot_operations_refuse_without_a_token():
     import pytest as _pytest
 

@@ -58,14 +58,14 @@ stateDiagram-v2
 
 | Module | Responsibility | Decision |
 |---|---|---|
-| `__init__.py` (root) | `register(ctx)`: registers the 8 kanban hooks as kicks, the unload callback, and `runtime.start()` — no I/O of its own, since the thread sleeps before it builds. `_build_consumer` is the deferred startup: secrets, preflight, paths, degrade-to-no-op. | ADR-0002, ADR-0003, ADR-0013 |
+| `__init__.py` (root) | `register(ctx)`: an explicit non-matching `publisher_profile` returns inert; otherwise registers 8 kanban hooks as kicks, the unload callback, and `runtime.start()` — no I/O of its own, since the thread sleeps before it builds. `_build_consumer` is the deferred startup: secrets, preflight, paths, degrade-to-no-op. | ADR-0002, ADR-0003, ADR-0013, ADR-0014 |
 | `kanban_task_threads/runtime.py` | One daemon thread between hooks and consumer: started at register time so every profile is a lease candidate, waits one interval before its first build, poll interval as fallback for hook-less events, `shutdown()` joins the thread. | ADR-0002, ADR-0013 |
 | `kanban_task_threads/view.py` | Task row → flat dict of strings. Computes `stale`; gates `workspace_path` behind opt-in. | ADR-0001, ADR-0011 |
 | `kanban_task_threads/render.py` | View → `Card`; event payload → reply text. Status vocabulary, deterministic truncation, default templates. | ADR-0001, ADR-0006 |
 | `kanban_task_threads/templates.py` | `format_map` over flat scalars via a Formatter that rejects `.`/`[`/positional fields; fallback to trusted defaults. | ADR-0006 |
-| `kanban_task_threads/transport.py` | The seam (Protocol + capability constants), the Discord implementation, and the preflight probes. `allowed_mentions: {"parse": []}` is hard-coded at the call site. | ADR-0003, ADR-0004, ADR-0007 |
+| `kanban_task_threads/transport.py` | The seam (Protocol + capability constants), Discord writes/preflight, and bot bulk reads of active plus latest-25 archived thread metadata. `allowed_mentions: {"parse": []}` is hard-coded at the call site. | ADR-0003, ADR-0004, ADR-0007, ADR-0014 |
 | `kanban_task_threads/store.py` | Durable plugin-owned state in SQLite: cursor, task→post mapping, leases, tombstones, dead letters. | ADR-0005 |
-| `kanban_task_threads/consumer.py` | The loop: lease → scan `task_events` → per-task publish → cursor advance. All failure policy lives here. | ADR-0007 |
+| `kanban_task_threads/consumer.py` | The loop: lease → scan `task_events` → per-task publish → cursor advance → due bounded metadata audit. Audit timing/level is private process memory; all failure policy lives here. | ADR-0007, ADR-0014 |
 
 Everything under `kanban_task_threads/` is stdlib-only and Hermes-free: tests
 import it directly, the sandbox drives it with a console transport, and the
@@ -92,6 +92,8 @@ a hook kick collapses that wait.
   Secrets: `KANBAN_TASK_THREADS_WEBHOOK_URL`
   (required; in production an `op://` reference resolved by the profile env,
   never a literal) and `KANBAN_TASK_THREADS_BOT_TOKEN` (optional, ADR-0003 extras).
+  If non-empty `publisher_profile` does not exactly match `ctx.profile_name`,
+  registration returns inert before any of this; empty preserves ADR-0013.
 - **Startup classification**: a real config verdict (missing webhook in a
   populated scope, rejected credential, impossible tag policy, or Hermes not
   importable) logs once and exits until reload. A transient preflight or
@@ -156,6 +158,13 @@ Per batch and per task, in event-id order:
 3. **End of the task's batch** → one `edit_card` re-rendered from the task
    row (skipped when the post was just opened and nothing was replied).
 
+With bot metadata capability, the first pass then audits Discord immediately.
+It bulk-reads all active guild threads (filtered to the forum) and only the
+latest 25 public archived forum threads. For plugin-owned posts in that set,
+actual tags/archive state are repaired in safe order. Clean intervals are
+5/15/30/60 minutes capped; a patch confirms after one minute. A 429 honors
+`retry_after`; all audit failures are warnings and do not block the event path.
+
 The card is signed by the webhook's own name, never a person: a webhook
 message's `username` is fixed at creation and unPATCHable, and the card is
 rewritten for life — the card is the board speaking, the replies are who did
@@ -197,8 +206,8 @@ posts  (board, task_id PK,                        -- one row per task ever seen
         state,                                    -- live | tombstone | dead_letter
         detail, last_event_id,                    -- the deduping position
         backoff_until, pending_create_at,
-        card_dirty, last_status_key, last_tag,
-        last_name, thread_archived)
+        card_dirty, last_status_key,
+        last_tag, last_name, thread_archived)     -- cache hints, not Discord truth
 leases (name PK, holder, expires_at, token)       -- fenced consume:<board>
 ```
 
@@ -207,7 +216,8 @@ board-shared root, never `ctx.state`/`plugin-data`, which resolve per profile
 while the board is shared (ADR-0005's rationale). Rows are never deleted on
 "terminal" statuses: terminal is not final (ADR-0005), and tombstones/dead letters
 must survive reanimation. `posts.destination` records which webhook/forum a
-post belongs to; a mismatch freezes publication until an operator resolves it.
+post belongs to; a configured destination mismatch freezes publication rather
+than treating an unreachable old post as deletion.
 
 ## Hard-won platform facts
 
@@ -220,7 +230,8 @@ Things a fresh reader would otherwise lose an hour to:
   content but never the signature. This is *why* cards are unsigned (ADR-0001).
 - **The forum post id IS the thread id** (confirmed live), and a webhook
   `PATCH` of an archived thread's starter succeeds without unarchiving it,
-  while a reply unarchives (ADR-0002, probed in design).
+  while a reply unarchives. The bot audit additionally corrects archive state
+  in both directions for posts inside its bounded read window (ADR-0014).
 - **The supported test entry point is `./scripts/sandbox test`** — `uv`
   provisions the pinned Python and pytest environment.
 - **The validate probe's stub context** returns `None` for attributes like
@@ -230,7 +241,7 @@ Things a fresh reader would otherwise lose an hour to:
 
 | Layer | Command | Proves |
 |---|---|---|
-| Unit | `./scripts/sandbox test` | rendering, truncation, template rejection, store CAS/lease/fencing, consumer failure policy, runtime lifecycle, startup classification, entry-point contract |
+| Unit | `./scripts/sandbox test` | rendering, truncation, template rejection, store CAS/lease/fencing, consumer failure policy, profile pinning, bulk metadata parsing/repair/backoff, runtime lifecycle, startup classification, entry-point contract |
 | Runtime load | `./scripts/sandbox doctor` | `register()` loads in the real Hermes (8 hooks), offline |
 | End-to-end sans Discord | `./scripts/sandbox task && ./scripts/sandbox consume` | real event rows → one post, replies in order, durable cursor |
 | Live, bounded | `scripts/live_run.py` (explicit authorization each time) | the real consumer against the test forum: one pass, observe, stop. Run 2026-09-20: 1 post, 5 replies, 1 edit; second run silent. |

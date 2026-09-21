@@ -22,9 +22,17 @@ freeze the first one forever (see [docs/transport.md](docs/transport.md)).
 - A Discord **forum channel** and a **webhook** bound to it. The webhook is
   write-only and bound to one channel: a leak costs only the ability to post
   there.
-- Optionally, a **bot token** with `View Channel` and `Manage Threads` on that
-  forum — this unlocks title state, tags and archiving. The plugin works
+- Optionally, the selected publisher profile's **existing Discord bot token**.
+  Do not create a dedicated bot for this plugin. Its integration-managed role
+  needs `View Channel`, `MANAGE_THREADS` (shown in Discord as **Manage Threads
+  and Posts**) and `READ_MESSAGE_HISTORY` for archived listing on that forum.
+  This unlocks title state, tags, archiving and metadata repair. The plugin works
   without it and never requires it.
+
+![Discord role permission toggle labelled Manage Threads and Posts; this UI permission corresponds to the MANAGE_THREADS API permission](docs/assets/discord-manage-threads-and-posts.png)
+
+Discord creates and manages this integration role for the bot. Grant the
+permission to that role; it is not a role you manually assign to people.
 
 ## Install
 
@@ -80,6 +88,7 @@ All optional, under `plugins.entries.<id>.settings`:
 | Key | Default | Meaning |
 |---|---|---|
 | `board` | current board | Which board this instance serves |
+| `publisher_profile` | empty | Exact `ctx.profile_name` allowed to publish. Empty preserves the public/single-profile default: every loaded profile is a lease candidate and the board lease elects the active publisher. A value pins publication and gives up cross-profile failover |
 | `reply_on` | sensible set | Event kinds that earn a reply in the thread |
 | `include_workspace_path` | `false` | Publish the absolute workspace path on the card (see Privacy) |
 | `discord_applied_tag_ids` | `[]` | Forum tag ids applied to new posts |
@@ -139,6 +148,9 @@ operator.
 - **The status tag owns the thread's tags** when the bot path is active: a
   manually applied tag will not survive the next automated retag
   (docs/transport.md documents the tradeoff).
+- **Metadata audit is deliberately bounded** to all active guild threads plus
+  the forum's latest 25 public archived threads. Older archived posts are not
+  scanned until they re-enter that window.
 - **Replies are at-least-once** across a crash between send and cursor write;
   a rare duplicate reply is possible. Post creation is strictly guarded
   instead — ambiguous outcomes wait for an operator (`reconcile` verbs).

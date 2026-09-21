@@ -7,7 +7,7 @@ each proving what the previous one cannot:
 
 | Layer | Command | Needs | Proves | Cannot reach |
 |---|---|---|---|---|
-| Unit | `./scripts/sandbox test` | uv | rendering, truncation, template rejection, store CAS/lease/fencing, the consumer's whole failure policy, runtime lifecycle, startup classification, the entry-point contract | Hermes |
+| Unit | `./scripts/sandbox test` | uv | rendering, truncation, template rejection, store CAS/lease/fencing, consumer failure policy, profile pinning, bulk metadata parsing/repair/backoff, runtime lifecycle, startup classification, entry-point contract | Hermes |
 | Runtime load | `./scripts/sandbox doctor` | hermes | `register()` loads through the real plugin loader (temp home, sockets blocked) | the network |
 | End-to-end, no network | `./scripts/sandbox task && ./scripts/sandbox consume` | hermes | real event rows → one post, replies in order, durable cursor (second run silent), via a console transport | Discord |
 | Live, bounded | `scripts/live_run.py` | a test forum's webhook | the real webhook path: create, in-place edit, reply | — |
@@ -32,7 +32,8 @@ LLM, no worker.
   against; the allowed-mentions and truncation rules are asserted on every
   recorded body.
 - `FakeTransport` — records seam operations and raises queued errors per
-  operation; what the consumer's failure policy is tested against.
+  operation; its in-memory thread inventory makes webhook-then-bot metadata
+  repair and audit scheduling testable without Discord.
 - `make_board` — a real SQLite file with the real tables' shape (`tasks`,
   `task_events`, `task_links`); the consumer is tested against actual SQL, not
   mocks of it.

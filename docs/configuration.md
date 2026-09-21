@@ -22,6 +22,15 @@ candidate. Kanban hooks fire only in the process holding Hermes' singleton
 dispatcher lock, so a kick-only start would elect the publisher by gateway boot
 order and leave the `consume:<board>` lease with nobody to fail over to.
 
+`publisher_profile` is the explicit exception (ADR-0014). Empty is backward
+compatible and keeps every profile as a candidate. When set, `register()`
+compares it exactly with `ctx.profile_name`; non-matching profiles are inert
+and do not create a runtime, hooks, unload callback, secret lookup, database
+handle, or network request. Pinning is useful when Discord credentials and
+role ownership belong to one existing profile, but it intentionally gives up
+ADR-0013's cross-profile failover. Clearing the setting restores automatic
+lease candidacy.
+
 The unload callback is load-bearing, not politeness:
 `discover_plugins(force=True)` re-imports the module and `hermes plugins
 disable` walks the same path — without `ctx.on_unload(runtime.shutdown)`, the
@@ -32,8 +41,16 @@ sessions from a module nobody can reach anymore.
 
 - `KANBAN_TASK_THREADS_WEBHOOK_URL` — required. Without it the plugin degrades
   to a no-op with one log line.
-- `KANBAN_TASK_THREADS_BOT_TOKEN` — optional; unlocks the `title_state`/`tags`
-  capabilities and the real tag preflight.
+- `KANBAN_TASK_THREADS_BOT_TOKEN` — optional; may reference or alias the
+  selected publisher profile's existing Discord bot token. The plugin does
+  not provision a dedicated bot. It unlocks `title_state`/`tags`, the real tag
+  preflight, and bounded metadata reconciliation.
+
+The token authenticates the bot; authorization comes from its
+integration-managed Discord role. That role needs access to the forum,
+`MANAGE_THREADS` (Discord UI: **Manage Threads and Posts**) and
+`READ_MESSAGE_HISTORY` so the latest archived posts can be listed. This role
+belongs to the integration and is not manually assigned to people.
 
 Both are resolved through Hermes' profile-aware secret scope rather than read
 directly from the process environment, so they resolve per profile. Ship them

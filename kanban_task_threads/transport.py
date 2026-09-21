@@ -138,28 +138,67 @@ class DiscordTransport:
 
     # --- bot-token extras (ADR-0003): capability-gated, the webhook cannot do these --
 
-    def set_status_tag(self, ref: ThreadRef, name: str) -> bool:
+    def set_status_tag(self, ref: ThreadRef, name: str) -> bool | dict:
         """Apply the forum tag with this *name* to the thread (replacing any).
         Names are resolved against the forum's own tag list, fetched once —
         installers manage tags by name, ids stay Discord's business. Unknown
         name: no-op returning False (a forum without the convention's tags is
         degraded, not broken)."""
-        tag_id = self._forum_tag_ids().get(name)
+        tag_id = self.status_tag_id(name)
         if tag_id is None:
             return False
-        self._bot_patch_thread(ref, {"applied_tags": [tag_id]})
-        return True
+        return self._bot_patch_thread(ref, {"applied_tags": [tag_id]})
 
-    def clear_status_tag(self, ref: ThreadRef) -> None:
+    def status_tag_id(self, name: str) -> str | None:
+        """Resolve a plugin status-tag name once against the forum definition."""
+        return self._forum_tag_ids().get(name)
+
+    def clear_status_tag(self, ref: ThreadRef) -> bool | dict:
         """Back to the creation default: the configured applied_tag_ids (so a
         tag-required forum stays satisfied), or no tags at all."""
-        self._bot_patch_thread(ref, {"applied_tags": list(self._applied_tag_ids)})
+        return self._bot_patch_thread(ref, {"applied_tags": list(self._applied_tag_ids)})
 
-    def rename(self, ref: ThreadRef, name: str) -> None:
-        self._bot_patch_thread(ref, {"name": name})
+    def rename(self, ref: ThreadRef, name: str) -> bool | dict:
+        return self._bot_patch_thread(ref, {"name": name})
 
-    def set_archived(self, ref: ThreadRef, archived: bool) -> None:
-        self._bot_patch_thread(ref, {"archived": archived})
+    def set_archived(self, ref: ThreadRef, archived: bool) -> bool | dict:
+        return self._bot_patch_thread(ref, {"archived": archived})
+
+    def list_forum_threads(self, guild_id: str) -> dict[str, dict]:
+        """Return the bounded Discord metadata audit set.
+
+        Discord exposes active threads in one guild-wide bulk read, so filter
+        those by this forum. The public archived endpoint is forum-scoped and
+        intentionally limited to its latest 25 entries; there is no pagination
+        beyond that bounded reconciliation window.
+        """
+        headers = self._bot_headers()
+        active = self._call(
+            "GET",
+            f"https://discord.com/api/v10/guilds/{guild_id}/threads/active",
+            None,
+            headers=headers,
+        )
+        archived = self._call(
+            "GET",
+            f"https://discord.com/api/v10/channels/{self._require_forum()}"
+            "/threads/archived/public?limit=25",
+            None,
+            headers=headers,
+        )
+        forum_id = self._require_forum()
+        result: dict[str, dict] = {}
+        for channel in (*active.get("threads", []), *archived.get("threads", [])):
+            if str(channel.get("parent_id") or "") != forum_id:
+                continue
+            thread_id = str(channel.get("id") or "")
+            if not thread_id:
+                continue
+            result[thread_id] = {
+                "applied_tags": tuple(str(tag) for tag in channel.get("applied_tags", [])),
+                "archived": bool((channel.get("thread_metadata") or {}).get("archived")),
+            }
+        return result
 
     def _forum_tag_ids(self) -> dict:
         if self._tag_ids_by_name is None:
@@ -174,13 +213,33 @@ class DiscordTransport:
             }
         return self._tag_ids_by_name
 
-    def _bot_patch_thread(self, ref: ThreadRef, body: dict) -> None:
-        self._call(
+    def _bot_patch_thread(self, ref: ThreadRef, body: dict) -> bool | dict:
+        response = self._call(
             "PATCH",
             f"https://discord.com/api/v10/channels/{ref.thread_id}",
             body,
             headers=self._bot_headers(),
         )
+        readback = self._metadata_readback(response)
+        return readback if readback is not None else True
+
+    @staticmethod
+    def _metadata_readback(channel: dict) -> dict | None:
+        """Normalize fields present in a successful Discord channel response.
+
+        PATCH responses are authoritative when Discord supplies these fields;
+        tiny test/proxy responses that omit them retain the requested-state
+        fallback in the consumer.
+        """
+        result = {}
+        if "applied_tags" in channel:
+            result["applied_tags"] = tuple(str(tag) for tag in channel.get("applied_tags", []))
+        metadata = channel.get("thread_metadata") or {}
+        if "archived" in metadata:
+            result["archived"] = bool(metadata["archived"])
+        if "name" in channel:
+            result["name"] = str(channel["name"])
+        return result or None
 
     def _bot_headers(self) -> dict:
         if not self._bot_token:

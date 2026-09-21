@@ -12,7 +12,10 @@ posts  (board, task_id PK,
         last_event_id,                -- the deduping watermark (monotonic)
         backoff_until,                -- per-task 429 backoff
         pending_create_at,            -- create attempt with unknown outcome
-        card_dirty)                   -- last card refresh failed; repaint
+        card_dirty,                    -- last card refresh failed; repaint
+        last_status_key,               -- cached card presentation
+        last_tag, last_name,           -- Discord metadata cache hints
+        thread_archived)               -- cache hint, not external truth
 leases (name PK, holder, expires_at, token)   -- consume:<board>, fenced
 ```
 
@@ -54,6 +57,12 @@ the post was created through. On every publish the consumer compares it with
 the currently configured destination and freezes mismatches instead of
 publishing: a re-pointed webhook cannot edit the old channel's messages, and
 the resulting 404s would be indistinguishable from a human deleting posts.
+
+`last_tag`, `last_name`, and `thread_archived` are traffic-saving cache hints,
+not assertions about Discord's present state. With bot capability, the bounded
+metadata audit refreshes tag/archive hints from bulk Discord reads and from
+fields returned by successful PATCHes. Audit timing and backoff are private
+consumer memory; they add no table, migration, or durable queue (ADR-0014).
 
 ## Terminal is not final
 
