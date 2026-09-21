@@ -179,3 +179,47 @@ def test_literal_ip_dashboard_url_warns_but_proceeds(entry, caplog):
         consumer = module._build_consumer(Ctx())
     assert consumer is not None  # advisory, never a verdict
     assert any("frozen" in r.message or "stable name" in r.message for r in caplog.records)
+
+
+def test_avatar_settings_are_wired_into_the_transport(entry):
+    http = FakeHttp()
+    http.queue(200, {"id": "1", "channel_id": "7", "name": "taskz"})
+    module = entry(WEBHOOK, http=http)
+
+    class Ctx(FakeCtx):
+        settings = {
+            "avatar_base_url": "https://assets.example.invalid/ktt",
+            "avatar_theme": "fill",
+            "avatar_palette": "black",
+        }
+
+        def get_config(self, key, default=None):
+            return self.settings.get(key, default)
+
+    consumer = module._build_consumer(Ctx())
+
+    assert consumer._transport._avatars.url_for("blocked") == (
+        "https://assets.example.invalid/ktt/v1/fill/black/96px/blocked.png"
+    )
+
+
+def test_invalid_avatar_settings_fail_closed_before_discord_preflight(entry, caplog):
+    import logging
+
+    http = FakeHttp()
+    module = entry(WEBHOOK, http=http)
+
+    class Ctx(FakeCtx):
+        def get_config(self, key, default=None):
+            if key == "avatar_base_url":
+                return "http://mutable.example.invalid/latest"
+            return default
+
+    with caplog.at_level(logging.ERROR):
+        consumer = module._build_consumer(Ctx())
+
+    assert consumer is None
+    assert http.calls == []
+    assert any(
+        "avatar" in record.message and "HTTPS" in record.message for record in caplog.records
+    )

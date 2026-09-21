@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .avatars import AvatarSet
 from .render import CONTENT_LIMIT, THREAD_TITLE_LIMIT, Card, truncate
 
 CAP_RICH_CARD = "rich_card"
@@ -28,6 +29,7 @@ CAP_TAGS = "tags"
 
 EMBED_TITLE_LIMIT = 256
 EMBED_DESCRIPTION_LIMIT = 4096
+WEBHOOK_USERNAME_LIMIT = 80
 
 # Not configurable (ADR-0006): correctness, not taste.
 _NO_MENTIONS = {"parse": []}
@@ -46,6 +48,13 @@ _MANAGED_FORUM_TAG_NAMES = (
     "failed",
 )
 _MAX_FORUM_TAGS = 20
+
+
+def _typed_webhook_username(username: str | None, message_type: str) -> str:
+    """Keep the event type intact and fit the actor into Discord's limit."""
+    suffix = f" · {message_type}"
+    return f"{truncate(username or 'system', WEBHOOK_USERNAME_LIMIT - len(suffix))}{suffix}"
+
 
 # The http seam: http(method, url, json_body_or_None, headers=None)
 #   -> (status, decoded_body)
@@ -90,7 +99,14 @@ class Transport(Protocol):
     def prepare_forum(self) -> bool: ...
     def open_thread(self, *, title: str, card: Card) -> ThreadRef: ...
     def edit_card(self, ref: ThreadRef, card: Card) -> None: ...
-    def append(self, ref: ThreadRef, *, content: str, username: str | None = None) -> str: ...
+    def append(
+        self,
+        ref: ThreadRef,
+        *,
+        content: str,
+        username: str | None = None,
+        message_type: str = "default",
+    ) -> str: ...
 
 
 class DiscordTransport:
@@ -105,6 +121,7 @@ class DiscordTransport:
         bot_token: str | None = None,
         applied_tag_ids: Sequence[str] = (),
         forum_channel_id: str | None = None,
+        avatars: AvatarSet | None = None,
     ):
         self._http = http
         self._webhook_url = webhook_url.rstrip("/")
@@ -112,6 +129,7 @@ class DiscordTransport:
         self._applied_tag_ids = list(applied_tag_ids)
         self._forum_channel_id = forum_channel_id
         self._forum_channel: dict | None = None
+        self._avatars = avatars
         self._tag_ids_by_name: dict | None = None  # fetched once, cached
 
     def capabilities(self) -> frozenset:
@@ -131,6 +149,8 @@ class DiscordTransport:
         }
         if self._applied_tag_ids:
             body["applied_tags"] = self._applied_tag_ids
+        if self._avatars:
+            body["avatar_url"] = self._avatars.url_for("default")
         message = self._call("POST", f"{self._webhook_url}?wait=true", body)
         return ThreadRef(thread_id=str(message["channel_id"]), message_id=str(message["id"]))
 
@@ -145,12 +165,23 @@ class DiscordTransport:
             },
         )
 
-    def append(self, ref: ThreadRef, *, content: str, username: str | None = None) -> str:
+    def append(
+        self,
+        ref: ThreadRef,
+        *,
+        content: str,
+        username: str | None = None,
+        message_type: str = "default",
+    ) -> str:
         body = {
             "content": truncate(content, CONTENT_LIMIT),
             "allowed_mentions": _NO_MENTIONS,
         }
-        if username:
+        if self._avatars:
+            avatar_type = self._avatars.resolve_message_type(message_type)
+            body["username"] = _typed_webhook_username(username, avatar_type)
+            body["avatar_url"] = self._avatars.url_for(avatar_type)
+        elif username:
             body["username"] = username
         message = self._call(
             "POST", f"{self._webhook_url}?wait=true&thread_id={ref.thread_id}", body

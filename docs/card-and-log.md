@@ -66,9 +66,12 @@ in the payload wins (`author` for comments, `implementer` for a review
 request, `reviewer` for requested changes); the **assignee** signs the
 worker's own actions (blocked, unblocked, completed); and **system
 observations** — crashed, timed out, reclaimed, gave up, archived — are
-unsigned, falling to the webhook's institutional name, because the worker
-didn't say it crashed: the board observed it. Signing a crash or a reviewer's
-verdict as the assignee would fabricate attribution.
+unsigned because the worker didn't say it crashed: the board observed it.
+Without message avatars they fall to the webhook's institutional name. With
+avatars enabled they use the explicit typed system identity
+`system · {message_type}` so Discord can display each event avatar separately.
+Signing a crash or a reviewer's verdict as the assignee would fabricate
+attribution.
 
 A cousin of the signature rule governs the **thread name**: a webhook can
 never rename a thread, so the name carries only what never changes — the

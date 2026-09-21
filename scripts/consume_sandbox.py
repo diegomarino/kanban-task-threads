@@ -37,7 +37,7 @@ class ConsoleTransport:
     def edit_card(self, ref, card):
         print(f"EDIT   {ref.thread_id}: {card.description.splitlines()[0]}")
 
-    def append(self, ref, *, content, username=None):
+    def append(self, ref, *, content, username=None, message_type="default"):
         self._n += 1
         who = f" ({username})" if username else ""
         print(f"REPLY  {ref.thread_id}{who}: {content}")

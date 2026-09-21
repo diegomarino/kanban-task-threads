@@ -4,6 +4,7 @@ allowed_mentions {"parse": []} on every call, deterministic truncation."""
 import pytest
 from conftest import FakeHttp
 
+from kanban_task_threads.avatars import AvatarSet
 from kanban_task_threads.render import Card
 from kanban_task_threads.transport import (
     CAP_LIVE_TIMESTAMPS,
@@ -58,6 +59,18 @@ def test_open_thread_posts_forum_post_and_returns_ref():
     assert ref == ThreadRef(thread_id="901", message_id="900")
 
 
+def test_open_thread_uses_default_avatar_without_adding_message_media():
+    http = FakeHttp()
+    avatars = AvatarSet("https://assets.example.invalid/ktt")
+
+    make(http, avatars=avatars).open_thread(title="fix the build", card=CARD)
+
+    body = http.calls[0][2]
+    assert body["avatar_url"] == avatars.url_for("default")
+    assert "attachments" not in body
+    assert all("image" not in embed and "thumbnail" not in embed for embed in body["embeds"])
+
+
 def test_card_messages_carry_the_summary_as_content():
     http = FakeHttp()
     t = make(http)
@@ -91,6 +104,15 @@ def test_edit_card_patches_starter_message_in_thread():
     assert body["embeds"][0]["title"] == "fix the build"
 
 
+def test_edit_card_does_not_try_to_change_the_frozen_author_avatar():
+    http = FakeHttp()
+    make(http, avatars=AvatarSet("https://assets.example.invalid/ktt")).edit_card(
+        ThreadRef("901", "900"), CARD
+    )
+
+    assert "avatar_url" not in http.calls[0][2]
+
+
 def test_embed_description_truncated_to_4096():
     http = FakeHttp()
     big = Card(title="t", description="d" * 10000, color=1)
@@ -111,6 +133,116 @@ def test_append_posts_reply_into_thread_signed_per_message():
     assert body["content"] == "blocked: waiting"
     assert body["username"] == "MarSan"
     assert mid == "902"
+
+
+@pytest.mark.parametrize(
+    "message_type",
+    [
+        "commented",
+        "blocked",
+        "unblocked",
+        "review_requested",
+        "changes_requested",
+        "completed",
+        "gave_up",
+        "crashed",
+        "timed_out",
+        "reclaimed",
+        "archived",
+    ],
+)
+def test_append_uses_the_message_type_avatar(message_type):
+    http = FakeHttp()
+    avatars = AvatarSet("https://assets.example.invalid/ktt")
+
+    make(http, avatars=avatars).append(
+        ThreadRef("901", "900"), content="event", message_type=message_type
+    )
+
+    assert http.calls[0][2]["avatar_url"] == avatars.url_for(message_type)
+
+
+def test_avatar_messages_separate_one_profile_across_message_types():
+    http = FakeHttp()
+    avatars = AvatarSet("https://assets.example.invalid/ktt")
+    transport = make(http, avatars=avatars)
+    ref = ThreadRef("901", "900")
+
+    transport.append(ref, content="comment", username="profile_wester", message_type="commented")
+    transport.append(ref, content="block", username="profile_wester", message_type="blocked")
+
+    identities = [(body["username"], body["avatar_url"]) for _, _, body in http.calls]
+    assert identities == [
+        ("profile_wester · commented", avatars.url_for("commented")),
+        ("profile_wester · blocked", avatars.url_for("blocked")),
+    ]
+
+
+def test_avatar_message_without_an_actor_uses_a_typed_system_identity():
+    http = FakeHttp()
+    avatars = AvatarSet("https://assets.example.invalid/ktt")
+
+    make(http, avatars=avatars).append(
+        ThreadRef("901", "900"), content="timeout", message_type="timed_out"
+    )
+
+    assert http.calls[0][2]["username"] == "system · timed_out"
+
+
+def test_avatar_identity_preserves_type_within_discord_username_limit():
+    http = FakeHttp()
+    avatars = AvatarSet("https://assets.example.invalid/ktt")
+
+    make(http, avatars=avatars).append(
+        ThreadRef("901", "900"),
+        content="review",
+        username="p" * 64,
+        message_type="changes_requested",
+    )
+
+    identity = http.calls[0][2]["username"]
+    assert len(identity) == 80
+    assert identity.endswith(" · changes_requested")
+    assert identity == f"{'p' * 59}… · changes_requested"
+
+
+def test_unknown_long_message_type_uses_the_bounded_default_identity_and_avatar():
+    http = FakeHttp()
+    avatars = AvatarSet("https://assets.example.invalid/ktt")
+
+    make(http, avatars=avatars).append(
+        ThreadRef("901", "900"),
+        content="future event",
+        username="coder",
+        message_type="future_" * 20,
+    )
+
+    body = http.calls[0][2]
+    assert body["username"] == "coder · default"
+    assert body["avatar_url"] == avatars.url_for("default")
+    assert len(body["username"]) <= 80
+
+
+def test_transport_without_avatar_configuration_preserves_existing_payloads():
+    http = FakeHttp()
+    transport = make(http)
+
+    ref = transport.open_thread(title="t", card=CARD)
+    transport.append(ref, content="event", message_type="blocked")
+
+    assert all("avatar_url" not in body for _, _, body in http.calls)
+
+
+def test_transport_without_avatars_preserves_profile_and_system_usernames():
+    http = FakeHttp()
+    transport = make(http)
+    ref = ThreadRef("901", "900")
+
+    transport.append(ref, content="block", username="profile_wester", message_type="blocked")
+    transport.append(ref, content="timeout", message_type="timed_out")
+
+    assert http.calls[0][2]["username"] == "profile_wester"
+    assert "username" not in http.calls[1][2]
 
 
 def test_append_truncates_content_to_2000():

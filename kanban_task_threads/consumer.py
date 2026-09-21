@@ -360,7 +360,12 @@ class Consumer:
                             render_reply(row["kind"], payload, template=template), ref, task_id
                         )
                         username = reply_username(row["kind"], payload, task_row["assignee"])
-                        self._transport.append(ref, content=content, username=username)
+                        self._transport.append(
+                            ref,
+                            content=content,
+                            username=username,
+                            message_type=row["kind"],
+                        )
                         replied += 1
                 pos = row["id"]
                 store.set_task_position(board, task_id, last_event_id=pos)
@@ -455,7 +460,9 @@ class Consumer:
             self._store.set_card_dirty(self._board, dependent_id, True)
             try:
                 ref = ThreadRef(thread_id=post["thread_id"], message_id=post["message_id"])
-                self._transport.append(ref, content=truncate(content, CONTENT_LIMIT))
+                self._transport.append(
+                    ref, content=truncate(content, CONTENT_LIMIT), message_type="default"
+                )
             except Exception as exc:
                 report.warnings.append(f"{dependent_id}: link not delivered: {exc!r}")
 

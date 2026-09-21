@@ -62,8 +62,9 @@ stateDiagram-v2
 | `kanban_task_threads/runtime.py` | One daemon thread between hooks and consumer: started at register time so every profile is a lease candidate, waits one interval before its first build, poll interval as fallback for hook-less events, `shutdown()` joins the thread. | ADR-0002, ADR-0013 |
 | `kanban_task_threads/view.py` | Task row → flat dict of strings. Computes `stale`; gates `workspace_path` behind opt-in. | ADR-0001, ADR-0011 |
 | `kanban_task_threads/render.py` | View → `Card`; event payload → reply text. Status vocabulary, deterministic truncation, default templates. | ADR-0001, ADR-0006 |
+| `kanban_task_threads/avatars.py` | Reads the local delivery manifest, validates the static origin plus global theme/palette, and maps event kinds to versioned PNG URLs. | ADR-0015 |
 | `kanban_task_threads/templates.py` | `format_map` over flat scalars via a Formatter that rejects `.`/`[`/positional fields; fallback to trusted defaults. | ADR-0006 |
-| `kanban_task_threads/transport.py` | The seam (Protocol + capability constants), Discord writes, lease-serialized managed-tag setup, preflight, and bot bulk reads of active plus latest-25 archived thread metadata. `allowed_mentions: {"parse": []}` is hard-coded at the call site. | ADR-0003, ADR-0004, ADR-0007, ADR-0014 |
+| `kanban_task_threads/transport.py` | The seam (Protocol + capability constants), Discord writes and avatar selection, lease-serialized managed-tag setup, preflight, and bot bulk reads of active plus latest-25 archived thread metadata. `allowed_mentions: {"parse": []}` is hard-coded at the call site. | ADR-0003, ADR-0004, ADR-0007, ADR-0014, ADR-0015 |
 | `kanban_task_threads/store.py` | Durable plugin-owned state in SQLite: cursor, task→post mapping, leases, tombstones, dead letters. | ADR-0005 |
 | `kanban_task_threads/consumer.py` | The loop: lease → scan `task_events` → per-task publish → cursor advance → due bounded metadata audit. Audit timing/level is private process memory; all failure policy lives here. | ADR-0007, ADR-0014 |
 
@@ -158,7 +159,8 @@ Per batch and per task, in event-id order:
    observations (crashed, timed out, reclaimed, gave up, archived) or unknown
    actors. Default `reply_on`: `commented, blocked, unblocked, completed,
    review_requested, changes_requested, gave_up, crashed, timed_out,
-   reclaimed, archived`.
+   reclaimed, archived`. The event kind also selects the optional static
+   Phosphor avatar; an unknown kind falls back to `default` (ADR-0015).
 3. **End of the task's batch** → one `edit_card` re-rendered from the task
    row (skipped when the post was just opened and nothing was replied).
 
@@ -245,7 +247,7 @@ Things a fresh reader would otherwise lose an hour to:
 
 | Layer | Command | Proves |
 |---|---|---|
-| Unit | `./scripts/sandbox test` | rendering, truncation, template rejection, store CAS/lease/fencing, consumer failure policy, profile pinning, tag provisioning/limits, bulk metadata parsing/repair/backoff, runtime lifecycle, startup classification, entry-point contract |
+| Unit | `./scripts/sandbox test` | rendering, truncation, avatar catalog/assets/payloads, template rejection, store CAS/lease/fencing, consumer failure policy, profile pinning, tag provisioning/limits, bulk metadata parsing/repair/backoff, runtime lifecycle, startup classification, entry-point contract |
 | Runtime load | `./scripts/sandbox doctor` | `register()` loads in the real Hermes (8 hooks), offline |
 | End-to-end sans Discord | `./scripts/sandbox task && ./scripts/sandbox consume` | real event rows → one post, replies in order, durable cursor |
 | Live, bounded | `scripts/live_run.py` (explicit authorization each time) | the real consumer against the test forum: one pass, observe, stop. Run 2026-09-20: 1 post, 5 replies, 1 edit; second run silent. |

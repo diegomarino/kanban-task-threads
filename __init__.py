@@ -142,6 +142,7 @@ def _build_consumer(ctx):
     import os
     from pathlib import Path
 
+    from .kanban_task_threads.avatars import AvatarConfigError, AvatarSet
     from .kanban_task_threads.consumer import Consumer
     from .kanban_task_threads.runtime import RetryableStartup
     from .kanban_task_threads.store import StateStore
@@ -182,9 +183,29 @@ def _build_consumer(ctx):
         )
         return None
 
+    avatar_base_url = ctx.get_config("avatar_base_url", "") or ""
+    avatars = None
+    if avatar_base_url:
+        try:
+            avatars = AvatarSet(
+                avatar_base_url,
+                theme=ctx.get_config("avatar_theme", "duotone") or "duotone",
+                palette=ctx.get_config("avatar_palette", "colored") or "colored",
+            )
+        except AvatarConfigError as exc:
+            logger.error(
+                "kanban-task-threads: invalid avatar configuration (%s); plugin is inactive",
+                exc,
+            )
+            return None
+
     tags = tuple(ctx.get_config("discord_applied_tag_ids") or ())
     transport = DiscordTransport(
-        urllib_http, webhook_url, bot_token=bot_token, applied_tag_ids=tags
+        urllib_http,
+        webhook_url,
+        bot_token=bot_token,
+        applied_tag_ids=tags,
+        avatars=avatars,
     )
 
     # Preflight. The channel is asked, never configured (ADR-0003): one credential,
@@ -203,6 +224,7 @@ def _build_consumer(ctx):
             bot_token=bot_token,
             applied_tag_ids=tags,
             forum_channel_id=str(info["channel_id"]),
+            avatars=avatars,
         )
     except TransportError as err:
         if 400 <= err.status < 500 and err.status != 429:

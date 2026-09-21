@@ -132,6 +132,32 @@ matters (ADR-0006):
 - **Not templatable — correctness:** when the card re-renders, idempotency,
   retry policy, truncation limits, `allowed_mentions`.
 
+### Static message avatars
+
+`avatar_base_url` enables the Phosphor message-state avatars. It must be an
+absolute HTTPS URL without credentials, query, fragment, control characters,
+or backslashes. The plugin appends the deterministic asset path; it does not
+fetch or validate the origin:
+
+```text
+{avatar_base_url}/v1/{theme}/{palette}/96px/{message_type}.png
+```
+
+`avatar_theme` applies globally and accepts `duotone` (default), `fill`, or
+`bold`. `avatar_palette` applies globally and accepts the opinionated sets
+`colored` (default), `black`, or `white`. Colors are deliberately not settings:
+the semantic palette is part of the reviewed visual contract, while the two
+monochrome palettes use black-on-white and white-on-black circles so neither
+depends on Discord's client background. Unknown themes and palettes are config
+verdicts: startup logs the problem and leaves the plugin inactive rather than
+emitting broken payloads.
+
+The source manifest and SVGs live under `assets/avatars/`; the renderer writes
+the complete static bundle and published manifest under `pages/v1/`. The Pages
+workflow deploys that directory after it reaches `main`. Blank
+`avatar_base_url` disables avatars and ignores theme/palette settings,
+preserving the pre-feature payload exactly (ADR-0015).
+
 Templates render through `str.format_map` over a flat dict of pre-stringified
 scalars, via a Formatter that rejects any field containing `.` or `[` and all
 positional fields — `str.format` on untrusted templates can traverse

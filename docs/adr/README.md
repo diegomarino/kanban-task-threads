@@ -28,3 +28,8 @@ even when it supersedes an old one.
 | [0012](0012-task-links-are-prerequisites.md) | `task_links` are prerequisites, not a hierarchy — the hub follows the real arrows |
 | [0013](0013-every-profile-is-a-candidate.md) | Every profile that loads the plugin is a lease candidate; the thread waits before it builds |
 | [0014](0014-publisher-profile-and-metadata-reconciliation.md) | Optional publisher pinning and bounded Discord metadata reconciliation |
+| [0015](0015-static-avatar-assets.md) | Explicit operator-hosted static Phosphor assets; no mutable upstream hotlinks or hidden uploads |
+
+Historical note: ADRs 0001–0007 were extracted from the original design
+document (2026-09-18, revised after two adversarial reviews with every
+platform claim probed live); 0008–0015 were decided during implementation.

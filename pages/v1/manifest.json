@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "version": "v1",
+  "source": "@phosphor-icons/core@2.1.1",
+  "png_size": 96,
+  "path_template": "{version}/{theme}/{palette}/{size}px/{message_type}.png",
+  "themes": [
+    "duotone",
+    "fill",
+    "bold"
+  ],
+  "palettes": {
+    "colored": {
+      "description": "Approved semantic foreground and background per message type"
+    },
+    "black": {
+      "foreground": "#000000",
+      "background": "#FFFFFF"
+    },
+    "white": {
+      "foreground": "#FFFFFF",
+      "background": "#000000"
+    }
+  },
+  "items": {
+    "default": {
+      "icon": "bell-ringing",
+      "foreground": "#4F46E5",
+      "background": "#E0E7FF"
+    },
+    "commented": {
+      "icon": "chat-circle-dots",
+      "foreground": "#0369A1",
+      "background": "#E0F2FE"
+    },
+    "blocked": {
+      "icon": "hand-palm",
+      "foreground": "#B91C1C",
+      "background": "#FEE2E2"
+    },
+    "unblocked": {
+      "icon": "lock-open",
+      "foreground": "#047857",
+      "background": "#D1FAE5"
+    },
+    "review_requested": {
+      "icon": "magnifying-glass",
+      "foreground": "#6D28D9",
+      "background": "#EDE9FE"
+    },
+    "changes_requested": {
+      "icon": "pencil-simple-line",
+      "foreground": "#B45309",
+      "background": "#FEF3C7"
+    },
+    "completed": {
+      "icon": "flag-checkered",
+      "foreground": "#15803D",
+      "background": "#DCFCE7"
+    },
+    "gave_up": {
+      "icon": "stop-circle",
+      "foreground": "#475569",
+      "background": "#E2E8F0"
+    },
+    "crashed": {
+      "icon": "bug",
+      "foreground": "#BE123C",
+      "background": "#FFE4E6"
+    },
+    "timed_out": {
+      "icon": "hourglass",
+      "foreground": "#C2410C",
+      "background": "#FFEDD5"
+    },
+    "reclaimed": {
+      "icon": "arrows-counter-clockwise",
+      "foreground": "#0E7490",
+      "background": "#CFFAFE"
+    },
+    "archived": {
+      "icon": "archive",
+      "foreground": "#334155",
+      "background": "#E2E8F0"
+    }
+  }
+}

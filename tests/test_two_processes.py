@@ -36,7 +36,7 @@ class FileTransport:
                          message_id=f"{{self.holder}}-m{{self.n}}")
     def edit_card(self, ref, card):
         self._record("edit_card")
-    def append(self, ref, *, content, username=None):
+    def append(self, ref, *, content, username=None, message_type="default"):
         self._record("append")
         self.n += 1
         return f"{{self.holder}}-m{{self.n}}"
