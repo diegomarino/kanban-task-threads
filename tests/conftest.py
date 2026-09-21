@@ -95,6 +95,7 @@ class FakeTransport:
         )
         self.thread_inventory = {}
         self.status_tag_ids = {}
+        self.record_prepare = False
 
     def queue_error(self, op, exc):
         self.errors.setdefault(op, []).append(exc)
@@ -105,6 +106,12 @@ class FakeTransport:
 
     def capabilities(self):
         return self._capabilities
+
+    def prepare_forum(self):
+        if self.record_prepare:
+            self.calls.append(("prepare_forum",))
+        self._maybe_raise("prepare_forum")
+        return False
 
     def set_status_tag(self, ref, name):
         self.calls.append(("set_status_tag", ref, name))

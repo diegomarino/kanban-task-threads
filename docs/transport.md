@@ -52,8 +52,12 @@ channel bodies are authoritative readback; `last_tag` and `thread_archived`
 in SQLite are only traffic-saving hints.
 Without a bot token none of this runs and the plugin is complete anyway.
 
-Bot-enabled preflight owns the status-tag vocabulary, not the whole forum tag
-list. It preserves every existing tag and appends only missing canonical names.
+The first bot-enabled pass holding the fenced board lease owns the status-tag
+vocabulary, not the whole forum tag list. Serializing setup with publication
+prevents multiple profile candidates from replacing `available_tags` from
+stale snapshots. It preserves every existing tag and appends only missing names.
+If the holder loses the lease during setup, the pass remains unprepared and the
+next attempt re-reads Discord before reusing any tag IDs.
 Changing the forum's `available_tags` requires `MANAGE_CHANNELS`; applying
 existing IDs to a thread requires `MANAGE_THREADS`. If all managed names already
 exist, no channel PATCH is sent and manual creation is a supported permission
@@ -106,9 +110,9 @@ Two rules are enforced *inside* the transport so no caller can forget them:
 - **Discord renders `<t:UNIX:R>` client-side** — elapsed time stays true
   without re-edits, which is most of what makes the card trustworthy.
 - **A tag-required forum (`flags & 16`) rejects every webhook create** lacking
-  `applied_tags` — with error code 40067. With a bot token the plugin
-  preflights this at startup and fails closed; without one it maps that 400 to
-  an actionable dead-letter message.
+  `applied_tags` — with error code 40067. With a bot token the first leased pass
+  discovers this and uses managed `triage` for creation; without one it maps
+  that 400 to an actionable dead-letter message.
 
 ## The Telegram appraisal (deliberately not built)
 

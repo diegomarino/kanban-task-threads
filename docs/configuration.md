@@ -55,13 +55,16 @@ that forum. Scope both management permissions to the forum rather than the
 whole server. This role belongs to the integration and is not manually assigned
 to people.
 
-At bot-enabled startup the plugin reads the forum's `available_tags`, preserves
-every existing tag, and appends only missing managed names. A successful PATCH
-response supplies the IDs used thereafter. If the combined set would exceed
-Discord's 20-tag limit, or Discord rejects the PATCH because `Manage Channels`
-is absent, startup fails closed with an actionable message. Operators who do
-not grant that permission may create the complete vocabulary manually; no
-PATCH is issued when every managed name already exists.
+On the first bot-enabled pass that holds `consume:<board>`, the plugin reads the
+forum's `available_tags`, preserves every existing tag, and appends only missing
+managed names. Running setup under the same fenced lease as publication keeps
+multiple profile candidates from racing full-list replacements. A successful
+PATCH response supplies the IDs used thereafter. If the combined set would
+exceed Discord's 20-tag limit, or Discord rejects the PATCH because `Manage
+Channels` is absent, that pass publishes nothing and reports an actionable
+error; later passes retry. Operators who do not grant that permission may
+create the complete vocabulary manually; no PATCH is issued when every managed
+name already exists.
 
 Both are resolved through Hermes' profile-aware secret scope rather than read
 directly from the process environment, so they resolve per profile. Ship them
@@ -95,7 +98,7 @@ The build runs once per attempt and ends in one of three ways:
 | Outcome | Meaning | Effect |
 |---|---|---|
 | a `Consumer` | configured and preflighted | the loop starts |
-| `None` | a **config verdict**: secret present-but-empty in a real scope, Discord rejected the webhook (401/404), tag-required forum with no tags configured, Hermes not importable | permanent no-op until a plugin reload; logged once |
+| `None` | a **config verdict**: secret present-but-empty in a real scope, Discord rejected the webhook (401/404), Hermes not importable | permanent no-op until a plugin reload; logged once |
 | `RetryableStartup` | a reason that may heal: no secret scope in this context, a 5xx/429 from the preflight, any network error | the thread stays alive, refreshes its registered profile scope, and retries every interval (sooner on a kick); warned once per distinct reason, then DEBUG |
 
 The distinction is the point: a DNS blip or an unlucky first kick must not
@@ -108,13 +111,14 @@ One credential, one source of truth: the forum channel id is never configured
 — `GET` on the webhook returns the webhook object, whose `channel_id` *is* the
 forum it posts to. The two cannot disagree because only one exists.
 
-With a bot token, the plugin also reads the channel, provisions the managed tag
-vocabulary, and checks `flags & 16` (tag required). If the forum demands a tag
-and `discord_applied_tag_ids` is empty, managed `triage` is used for creation;
-normal maintenance immediately applies the task's real state. Without a bot
-token the flag and tag IDs are unreadable, so a tag-required forum still needs
-an explicit `discord_applied_tag_ids`; Discord error 40067 is mapped to that
-actionable instruction at create time.
+The startup preflight only discovers the forum through the webhook. With a bot
+token, the first consumer pass holding the board lease then reads the channel,
+provisions the managed vocabulary, and checks `flags & 16` (tag required). If
+the forum demands a tag and `discord_applied_tag_ids` is empty, managed
+`triage` is used for creation; normal maintenance immediately applies the
+task's real state. Without a bot token the flag and tag IDs are unreadable, so
+a tag-required forum still needs an explicit `discord_applied_tag_ids`;
+Discord error 40067 is mapped to that actionable instruction at create time.
 
 ## Settings
 

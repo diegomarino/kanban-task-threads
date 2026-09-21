@@ -35,7 +35,14 @@ from .render import (
     truncate,
 )
 from .store import StateStore
-from .transport import CAP_TAGS, CAP_TITLE_STATE, ThreadRef, Transport, TransportError
+from .transport import (
+    CAP_TAGS,
+    CAP_TITLE_STATE,
+    ForumTagSetupError,
+    ThreadRef,
+    Transport,
+    TransportError,
+)
 from .view import build_view
 
 # Which events earn a permanent record in the thread. Not templatable (ADR-0006).
@@ -93,8 +100,9 @@ _TAG_REQUIRED_HINT = (
 class Consumer:
     """One pass over a board's task_events, publishing through a Transport.
 
-    Stateless between passes except for what StateStore holds; safe to
-    construct in every process — the lease decides who actually publishes.
+    Safe to construct in every process: the lease decides who performs forum
+    setup and publishes. Forum-prepared and audit-schedule flags are private
+    process-local traffic hints; durable correctness remains in StateStore.
     """
 
     def __init__(
@@ -135,6 +143,7 @@ class Consumer:
         # process-local scheduling hints — never schema, queue, or durable state.
         self._next_metadata_audit_at = 0
         self._metadata_audit_level = 0
+        self._forum_prepared = False
 
     def run_once(self, now: int | None = None) -> Report:
         """One full pass: acquire the fenced lease, scan events past the board
@@ -154,6 +163,34 @@ class Consumer:
         conn = sqlite3.connect(f"file:{self._board_db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         try:
+
+            def owns_lease():
+                # Fencing: prove ownership before every task's side effects. A
+                # holder that lost the lease must not race the new one.
+                return self._store.renew_lease(
+                    lease, self._holder, token, now=self._now(), ttl=self._lease_ttl
+                )
+
+            if CAP_TAGS in self._transport.capabilities() and not self._forum_prepared:
+                if not owns_lease():
+                    report.warnings.append("lease lost before Discord forum setup")
+                    return report
+                try:
+                    self._transport.prepare_forum()
+                except ForumTagSetupError as exc:
+                    report.errors.append(f"Discord forum setup failed: {exc}")
+                    return report
+                except TransportError as err:
+                    report.warnings.append(f"Discord forum setup failed, will retry: {err}")
+                    return report
+                except Exception as exc:
+                    report.warnings.append(f"Discord forum setup failed, will retry: {exc!r}")
+                    return report
+                if not owns_lease():
+                    report.warnings.append("lease lost during Discord forum setup")
+                    return report
+                self._forum_prepared = True
+
             cursor = self._store.get_cursor(self._board)
             events = conn.execute(
                 "SELECT id, task_id, kind, payload, created_at "
@@ -164,13 +201,6 @@ class Consumer:
             for row in events:
                 by_task.setdefault(row["task_id"], []).append(row)
             aborted = False
-
-            def owns_lease():
-                # Fencing: prove ownership before every task's side effects. A
-                # holder that lost the lease must not race the new one.
-                return self._store.renew_lease(
-                    lease, self._holder, token, now=self._now(), ttl=self._lease_ttl
-                )
 
             if events:
                 batch_max = events[-1]["id"]

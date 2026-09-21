@@ -102,40 +102,13 @@ def test_rejected_webhook_is_a_config_verdict(entry):
     assert module._build_consumer(FakeCtx()) is None
 
 
-def test_bot_preflight_provisions_tags_for_a_required_forum(entry):
+def test_bot_build_defers_tag_provisioning_until_the_consumer_holds_the_lease(entry):
     http = FakeHttp()
     http.queue(200, {"id": "1", "channel_id": "7", "name": "taskz"})
-    http.queue(200, {"id": "7", "flags": 16, "available_tags": []})
-    http.queue(
-        200,
-        {
-            "id": "7",
-            "flags": 16,
-            "available_tags": [
-                {"id": f"tag-{index}", "name": name}
-                for index, name in enumerate(
-                    [
-                        "triage",
-                        "todo",
-                        "scheduled",
-                        "ready",
-                        "running",
-                        "blocked",
-                        "needs-human",
-                        "review",
-                        "done",
-                        "archived",
-                        "failed",
-                    ],
-                    start=1,
-                )
-            ],
-        },
-    )
     secrets = dict(WEBHOOK, KANBAN_TASK_THREADS_BOT_TOKEN="bot")
     module = entry(secrets, http=http)
     assert module._build_consumer(FakeCtx()) is not None
-    assert [call[0] for call in http.calls] == ["GET", "GET", "PATCH"]
+    assert [call[0] for call in http.calls] == ["GET"]
 
 
 def test_bot_token_wiring_can_resolve_forum_tags(entry):

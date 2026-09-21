@@ -63,7 +63,7 @@ stateDiagram-v2
 | `kanban_task_threads/view.py` | Task row → flat dict of strings. Computes `stale`; gates `workspace_path` behind opt-in. | ADR-0001, ADR-0011 |
 | `kanban_task_threads/render.py` | View → `Card`; event payload → reply text. Status vocabulary, deterministic truncation, default templates. | ADR-0001, ADR-0006 |
 | `kanban_task_threads/templates.py` | `format_map` over flat scalars via a Formatter that rejects `.`/`[`/positional fields; fallback to trusted defaults. | ADR-0006 |
-| `kanban_task_threads/transport.py` | The seam (Protocol + capability constants), Discord writes/preflight including idempotent managed-tag setup, and bot bulk reads of active plus latest-25 archived thread metadata. `allowed_mentions: {"parse": []}` is hard-coded at the call site. | ADR-0003, ADR-0004, ADR-0007, ADR-0014 |
+| `kanban_task_threads/transport.py` | The seam (Protocol + capability constants), Discord writes, lease-serialized managed-tag setup, preflight, and bot bulk reads of active plus latest-25 archived thread metadata. `allowed_mentions: {"parse": []}` is hard-coded at the call site. | ADR-0003, ADR-0004, ADR-0007, ADR-0014 |
 | `kanban_task_threads/store.py` | Durable plugin-owned state in SQLite: cursor, task→post mapping, leases, tombstones, dead letters. | ADR-0005 |
 | `kanban_task_threads/consumer.py` | The loop: lease → scan `task_events` → per-task publish → cursor advance → due bounded metadata audit. Audit timing/level is private process memory; all failure policy lives here. | ADR-0007, ADR-0014 |
 
@@ -104,10 +104,11 @@ a hook kick collapses that wait.
   scope and retries each interval, sooner on a kick.
 - **Preflight asymmetry**: the forum channel is asked, never configured —
   `GET` on the webhook returns its `channel_id` (ADR-0003: one credential, one
-  source of truth). With a bot token the tag requirement (`flags & 16`) is
-  checked at startup and fails closed with an actionable message; without one
-  it is unknowable up front, so the create-time 400 (Discord code 40067) is
-  mapped to the same actionable text in the dead-letter detail.
+  source of truth). Bot tag setup and the tag requirement (`flags & 16`) are
+  checked only after acquiring `consume:<board>`; this serializes full-list
+  `available_tags` replacement across profile candidates. Without a bot token
+  the requirement is unknowable up front, so create-time Discord code 40067 is
+  mapped to actionable dead-letter detail.
 - **Teardown**: `ctx.on_unload(runtime.shutdown)`. `discover_plugins(force=True)`
   re-imports the module and `hermes plugins disable` walks the same path; an
   orphaned thread would keep contesting the lease from an unreachable module.

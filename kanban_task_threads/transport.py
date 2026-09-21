@@ -87,6 +87,7 @@ class Transport(Protocol):
     starter in place, `append` posts one reply and returns its message id."""
 
     def capabilities(self) -> frozenset: ...
+    def prepare_forum(self) -> bool: ...
     def open_thread(self, *, title: str, card: Card) -> ThreadRef: ...
     def edit_card(self, ref: ThreadRef, card: Card) -> None: ...
     def append(self, ref: ThreadRef, *, content: str, username: str | None = None) -> str: ...
@@ -160,7 +161,8 @@ class DiscordTransport:
 
     def set_status_tag(self, ref: ThreadRef, name: str) -> bool | dict:
         """Apply the forum tag with this *name* to the thread (replacing any).
-        Names are resolved against the forum definition prepared at startup;
+        Names are resolved against the forum definition prepared on the first
+        pass that holds the board lease;
         ids stay Discord's business. An unknown name is a no-op returning
         False, which also protects a long-running process if an operator later
         deletes a managed tag."""
@@ -229,7 +231,7 @@ class DiscordTransport:
         tag on every newly-created post.
         """
         try:
-            channel = self._get_forum_channel()
+            channel = self._refresh_forum_channel()
         except TransportError as err:
             if err.status == 403:
                 raise ForumTagSetupError(
@@ -274,14 +276,18 @@ class DiscordTransport:
 
     def _get_forum_channel(self) -> dict:
         if self._forum_channel is None:
-            channel = self._call(
-                "GET",
-                f"https://discord.com/api/v10/channels/{self._require_forum()}",
-                None,
-                headers=self._bot_headers(),
-            )
-            self._cache_forum_channel(channel)
+            self._refresh_forum_channel()
         return self._forum_channel
+
+    def _refresh_forum_channel(self) -> dict:
+        channel = self._call(
+            "GET",
+            f"https://discord.com/api/v10/channels/{self._require_forum()}",
+            None,
+            headers=self._bot_headers(),
+        )
+        self._cache_forum_channel(channel)
+        return channel
 
     def _cache_forum_channel(self, channel: dict) -> None:
         self._forum_channel = channel

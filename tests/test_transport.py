@@ -250,6 +250,50 @@ def test_prepare_forum_does_not_patch_when_all_managed_tags_exist():
     assert [call[0] for call in http.calls] == ["GET"]
 
 
+def test_prepare_forum_refreshes_tag_ids_when_a_lease_retry_calls_it_again():
+    names = [
+        "triage",
+        "todo",
+        "scheduled",
+        "ready",
+        "running",
+        "blocked",
+        "needs-human",
+        "review",
+        "done",
+        "archived",
+        "failed",
+    ]
+    http = FakeHttp()
+    http.queue(
+        200,
+        {
+            "id": "777",
+            "flags": 0,
+            "available_tags": [
+                {"id": f"old-{index}", "name": name} for index, name in enumerate(names, start=1)
+            ],
+        },
+    )
+    http.queue(
+        200,
+        {
+            "id": "777",
+            "flags": 0,
+            "available_tags": [
+                {"id": f"new-{index}", "name": name} for index, name in enumerate(names, start=1)
+            ],
+        },
+    )
+    transport = bot(http)
+
+    transport.prepare_forum()
+    transport.prepare_forum()
+
+    assert [call[0] for call in http.calls] == ["GET", "GET"]
+    assert transport.status_tag_id("done") == "new-9"
+
+
 def test_prepare_forum_fails_before_patch_when_managed_tags_exceed_discord_limit():
     http = FakeHttp()
     http.queue(

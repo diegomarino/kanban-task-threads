@@ -36,15 +36,16 @@ change; the desired tag lands before a terminal thread is finally archived.
 Successful PATCH response fields are authoritative readback. SQLite
 `last_tag`/`thread_archived` remain cache hints, not claims of external truth.
 
-The status tag mapping is total. Bot-enabled startup reuses exact-name matches
-and creates any missing managed tags while preserving unrelated tags:
+The status tag mapping is total. The first bot-enabled pass holding the fenced
+board lease reuses exact-name matches and creates any missing managed tags
+while preserving unrelated tags:
 `triage`, `todo`, `scheduled`, `ready`, `running`, `blocked`, `review`, `done`,
 and `archived` map to the same names; blocked `needs_input` maps to
 `needs-human`; stale maps to `failed`; dependency wait maps to `blocked`.
 These tags are plugin-owned filtering metadata, so manual edits may be
 overwritten. Creating missing forum tags requires `MANAGE_CHANNELS`; applying
 them requires `MANAGE_THREADS`. If the 20-tag limit would be exceeded, or the
-channel PATCH is forbidden, startup fails closed without deleting anything.
+channel PATCH is forbidden, the pass fails closed without deleting anything.
 When a forum requires a tag, bot mode uses managed `triage` for creation unless
 `discord_applied_tag_ids` explicitly overrides it; webhook-only mode still
 needs an explicit creation tag ID.
@@ -68,3 +69,7 @@ consumption. Timing and level are private process memory only.
   are deliberately outside automated repair until they re-enter that window.
 - Pinning is explicit and reversible by clearing `publisher_profile`, but a
   pinned publisher has no cross-profile failover while it is unavailable.
+- Forum setup runs under `consume:<board>`, so multiple default profile
+  candidates cannot race full-list `available_tags` replacements or retain IDs
+  invalidated by another candidate. A holder that loses the lease during setup
+  leaves setup pending; the next attempt re-reads Discord's current tag IDs.

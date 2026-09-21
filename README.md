@@ -36,8 +36,8 @@ freeze the first one forever (see [docs/transport.md](docs/transport.md)).
 Discord creates and manages this integration role for the bot. Grant the
 permission to that role; it is not a role you manually assign to people.
 If you do not grant `Manage Channels`, create all managed tags manually before
-startup; the plugin will reuse them and will not need that permission while the
-full vocabulary remains present.
+the first publishing pass; the plugin will reuse them and will not need that
+permission while the full vocabulary remains present.
 
 ## Install
 
@@ -81,11 +81,11 @@ the forum after the board's slug (`#tasks-default`, `#tasks-web`), so a human
 reading the channel list can tell which board publishes where. One deployment
 serves one board; point each board's deployment at its own forum's webhook.
 
-> **Managed tags:** with a bot token, startup reuses or creates the exact forum
-> tags `triage`, `todo`, `scheduled`, `ready`, `running`, `blocked`,
+> **Managed tags:** with a bot token, the first pass holding the board lease
+> reuses or creates the exact forum tags `triage`, `todo`, `scheduled`, `ready`, `running`, `blocked`,
 > `needs-human`, `review`, `done`, `archived`, and `failed`. Existing unrelated
-> tags are preserved. Discord permits at most 20 forum tags, so startup fails
-> clearly rather than deleting anything if the combined set will not fit.
+> tags are preserved. Discord permits at most 20 forum tags, so the pass fails
+> closed rather than deleting anything if the combined set will not fit.
 >
 > **Forums that require tags:** the bot path automatically uses managed
 > `triage` as the creation tag when no `discord_applied_tag_ids` override is

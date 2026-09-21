@@ -271,7 +271,8 @@ def test_audit_rechecks_the_fenced_lease_before_each_tasks_patches(board, tmp_pa
             "applied_tags": ("done",),
             "archived": False,
         }
-    renewals = iter((True, True, False))
+    # Forum preparation now proves the lease before event/audit side effects.
+    renewals = iter((True, True, True, True, False))
     store.renew_lease = lambda *args, **kwargs: next(renewals)
     consumer = Consumer(
         tmp_path / "kanban.db",

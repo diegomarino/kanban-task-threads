@@ -147,7 +147,6 @@ def _build_consumer(ctx):
     from .kanban_task_threads.store import StateStore
     from .kanban_task_threads.transport import (
         DiscordTransport,
-        ForumTagSetupError,
         TransportError,
         urllib_http,
     )
@@ -189,11 +188,10 @@ def _build_consumer(ctx):
     )
 
     # Preflight. The channel is asked, never configured (ADR-0003): one credential,
-    # one source of truth. With a bot token the managed tag vocabulary is
-    # provisioned and the tag requirement is checked for real; without one,
-    # the consumer maps the create-time 400 to an actionable message instead.
-    # Only a Discord *rejection* of the credential or tag setup is a config
-    # verdict; a 5xx/429 or a network error may heal.
+    # one source of truth. Managed tag setup is deliberately deferred until
+    # Consumer holds the board lease, so multiple profile candidates cannot
+    # race full-list available_tags replacements. Without a bot token, the
+    # consumer maps a create-time tag-required 400 to an actionable message.
     try:
         info = transport.webhook_info()
         # Rebuild with the discovered forum id: the bot tag operations resolve
@@ -206,11 +204,6 @@ def _build_consumer(ctx):
             applied_tag_ids=tags,
             forum_channel_id=str(info["channel_id"]),
         )
-        if bot_token:
-            transport.prepare_forum()
-    except ForumTagSetupError as err:
-        logger.error("kanban-task-threads: %s. Plugin is inactive.", err)
-        return None
     except TransportError as err:
         if 400 <= err.status < 500 and err.status != 429:
             logger.error(
