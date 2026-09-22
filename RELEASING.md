@@ -15,9 +15,10 @@ public tree. It does not select, copy, or reconcile internal source commits.
 3. Run every publication gate below against that exact public candidate and
    merge its technical PR into `pre-release`. Pushes to `pre-release` run the
    same CI gates as `main`, but cannot run Release Please or publish a tag.
-4. When the integrated branch is ready, open a promotion PR from
-   `pre-release` to `main`. Preserve its constituent Conventional Commits; do
-   not squash the whole release train into an uninformative promotion commit.
+4. After every validation job passes on a `pre-release` push, CI opens or
+   reuses one promotion PR from `pre-release` to `main`. Merge it with **Create
+   a merge commit** so `pre-release` remains an ancestor of `main`; do not
+   squash or rebase the release train.
 5. A push to public `main` lets Release Please open or update its release PR
    from the Conventional Commits now present on that lineage.
 
@@ -152,8 +153,10 @@ push to `diegomarino/hermes-agent` or open a PR against
 3. In repository **Settings → Actions → General**, an owner must enable
    **Allow GitHub Actions to create and approve pull requests** if it is not
    already enabled. The repository's default workflow token can remain
-   restricted: only the Release Please job declares its three write
-   permissions.
+   restricted. The promotion job adds only `pull-requests: write` while keeping
+   `contents: read`; the Release Please job separately declares `contents`,
+   `issues`, and `pull-requests` write access. No other CI job receives a
+   write-capable token.
 4. Read back the environment configuration and inspect the first catalog job.
    A green local suite or installed workflow file does not prove that the
    credential works or that an upstream PR was created.
