@@ -5,9 +5,8 @@ own**: the first post is a live status card rewritten in place, and the replies
 are the append-only log. The post body answers *"what is happening now?"*; the
 thread answers *"how did we get here?"*.
 
-![The forum: status-tagged posts per task; a thread's live card and its
-actor-signed log — a block raised, a human approving vault access, the
-rotation, completion](docs/assets/forum-demo.png)
+![Discord forum with managed status tags, task posts, a live status card and
+actor-signed thread updates](docs/assets/catalog-screenshot-full.png)
 
 Webhook replies can also carry a Phosphor avatar selected by message type:
 

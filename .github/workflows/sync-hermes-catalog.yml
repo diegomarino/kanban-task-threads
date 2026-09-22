@@ -80,6 +80,14 @@ jobs:
             echo "Release ${RELEASE_TAG} does not contain the catalog banner; refusing." >&2
             exit 1
           fi
+          if ! git cat-file -e "${RELEASE_SHA}:docs/assets/catalog-screenshot-full.png"; then
+            echo "Release ${RELEASE_TAG} does not contain the full catalog screenshot; refusing." >&2
+            exit 1
+          fi
+          if ! git cat-file -e "${RELEASE_SHA}:docs/assets/catalog-banner-detail.png"; then
+            echo "Release ${RELEASE_TAG} does not contain the detail catalog screenshot; refusing." >&2
+            exit 1
+          fi
 
           {
             echo "version=${RELEASE_VERSION}"

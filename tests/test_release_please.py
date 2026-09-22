@@ -192,6 +192,8 @@ def test_catalog_workflow_resolves_and_verifies_an_exact_stable_release():
     assert 'git rev-parse "${RELEASE_TAG}^{commit}"' in catalog_job
     assert 'git show "${RELEASE_SHA}:.release-please-manifest.json"' in catalog_job
     assert 'git cat-file -e "${RELEASE_SHA}:docs/assets/catalog-banner.png"' in catalog_job
+    assert 'git cat-file -e "${RELEASE_SHA}:docs/assets/catalog-screenshot-full.png"' in catalog_job
+    assert 'git cat-file -e "${RELEASE_SHA}:docs/assets/catalog-banner-detail.png"' in catalog_job
     assert "MANIFEST_VERSION" in catalog_job
     assert "version=${RELEASE_VERSION}" in catalog_job
     assert "sha=${RELEASE_SHA}" in catalog_job
@@ -206,6 +208,15 @@ def test_catalog_banner_is_a_two_to_one_png():
     width = int.from_bytes(banner[16:20], "big")
     height = int.from_bytes(banner[20:24], "big")
     assert (width, height) == (1200, 600)
+
+
+def test_catalog_screenshot_assets_replace_the_old_forum_demo():
+    full = ROOT / "docs/assets/catalog-screenshot-full.png"
+    detail = ROOT / "docs/assets/catalog-banner-detail.png"
+
+    assert full.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert detail.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert not (ROOT / "docs/assets/forum-demo.png").exists()
 
 
 def test_release_please_is_not_a_second_parallel_workflow():
@@ -227,12 +238,13 @@ def _run_catalog_update(path: Path, version: str, sha: str) -> subprocess.Comple
     )
 
 
-def test_catalog_updater_changes_only_release_metadata_and_adds_pinned_image(tmp_path):
+def test_catalog_updater_adds_pinned_catalog_media(tmp_path):
     catalog = tmp_path / "kanban-task-threads.yaml"
     catalog.write_text(
         "name: kanban-task-threads\n"
         "repo: https://github.com/diegomarino/kanban-task-threads\n"
         "sha: 0ae90a3869b8f3508bb8d9a96bc87bebb1c03094\n"
+        'description: "Old disclosure"\n'
         'version: "0.2.2"\n'
         "capabilities:\n"
         "  provides_hooks:\n"
@@ -250,24 +262,50 @@ def test_catalog_updater_changes_only_release_metadata_and_adds_pinned_image(tmp
         "name: kanban-task-threads\n"
         "repo: https://github.com/diegomarino/kanban-task-threads\n"
         "sha: e14bf61b538f5dc1425bc4c3bef7f12f0c212854\n"
+        'description: "Give every Hermes kanban task a live Discord forum thread with a '
+        "rewritten status card and append-only event log. Disclosure — sends task and "
+        "lifecycle data to the configured Discord webhook (no host allowlist). Cards and "
+        "event replies use built-in or operator-configured templates and may include "
+        "identifiers, titles, status, assignment, branch and workspace metadata, "
+        "relationships and blocking details, comments, event actors, reviewers, reasons, "
+        "summaries, and configured dashboard links; the comment excerpt length is "
+        "configurable. Fixed prerequisite announcements additionally send the prerequisite "
+        "task ID, title, assignee, and up to 140 characters of its body and are not "
+        "template-configurable. The absolute workspace path is off by default and requires "
+        "explicit opt-in. Reads the kanban "
+        "database read-only and stores thread mapping state under "
+        "<kanban_home>/kanban/plugins/kanban-task-threads/. With an optional existing "
+        "publisher-profile Discord bot token, reads forum and thread metadata; creates or "
+        "repairs managed status tags and emojis; replaces applied tags on plugin-managed "
+        "threads; renames threads; and archives or unarchives them. Discord fetches webhook "
+        'avatars from the configured HTTPS asset origin."\n'
         'version: "0.3.0"\n'
         "image: https://raw.githubusercontent.com/diegomarino/kanban-task-threads/"
         "e14bf61b538f5dc1425bc4c3bef7f12f0c212854/docs/assets/catalog-banner.png\n"
+        "screenshots:\n"
+        "  - https://raw.githubusercontent.com/diegomarino/kanban-task-threads/"
+        "e14bf61b538f5dc1425bc4c3bef7f12f0c212854/docs/assets/catalog-screenshot-full.png\n"
+        "  - https://raw.githubusercontent.com/diegomarino/kanban-task-threads/"
+        "e14bf61b538f5dc1425bc4c3bef7f12f0c212854/docs/assets/catalog-banner-detail.png\n"
         "capabilities:\n"
         "  provides_hooks:\n"
         "    - kanban_task_claimed\n"
     )
 
 
-def test_catalog_updater_replaces_an_existing_pinned_image(tmp_path):
+def test_catalog_updater_replaces_existing_pinned_catalog_media(tmp_path):
     catalog = tmp_path / "kanban-task-threads.yaml"
     catalog.write_text(
         "name: kanban-task-threads\n"
         "repo: https://github.com/diegomarino/kanban-task-threads\n"
         "sha: 0ae90a3869b8f3508bb8d9a96bc87bebb1c03094\n"
+        'description: "Old disclosure"\n'
         'version: "0.2.2"\n'
         "image: https://raw.githubusercontent.com/diegomarino/kanban-task-threads/"
         "0ae90a3869b8f3508bb8d9a96bc87bebb1c03094/docs/assets/catalog-banner.png\n"
+        "screenshots:\n"
+        "  - https://raw.githubusercontent.com/diegomarino/kanban-task-threads/"
+        "0ae90a3869b8f3508bb8d9a96bc87bebb1c03094/docs/assets/old.png\n"
     )
 
     result = _run_catalog_update(
@@ -278,9 +316,18 @@ def test_catalog_updater_replaces_an_existing_pinned_image(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert catalog.read_text().count("\nimage:") == 1
+    assert catalog.read_text().count("\nscreenshots:") == 1
     assert (
         "image: https://raw.githubusercontent.com/diegomarino/kanban-task-threads/"
         "e14bf61b538f5dc1425bc4c3bef7f12f0c212854/docs/assets/catalog-banner.png\n"
+        in catalog.read_text()
+    )
+    assert (
+        "screenshots:\n"
+        "  - https://raw.githubusercontent.com/diegomarino/kanban-task-threads/"
+        "e14bf61b538f5dc1425bc4c3bef7f12f0c212854/docs/assets/catalog-screenshot-full.png\n"
+        "  - https://raw.githubusercontent.com/diegomarino/kanban-task-threads/"
+        "e14bf61b538f5dc1425bc4c3bef7f12f0c212854/docs/assets/catalog-banner-detail.png\n"
         in catalog.read_text()
     )
 

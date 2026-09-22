@@ -11,6 +11,27 @@ PLUGIN_NAME = "kanban-task-threads"
 PLUGIN_REPOSITORY = "https://github.com/diegomarino/kanban-task-threads"
 CATALOG_IMAGE_ROOT = "https://raw.githubusercontent.com/diegomarino/kanban-task-threads"
 CATALOG_IMAGE_PATH = "docs/assets/catalog-banner.png"
+CATALOG_SCREENSHOT_PATHS = (
+    "docs/assets/catalog-screenshot-full.png",
+    "docs/assets/catalog-banner-detail.png",
+)
+CATALOG_DESCRIPTION = (
+    "Give every Hermes kanban task a live Discord forum thread with a rewritten status card "
+    "and append-only event log. Disclosure — sends task and lifecycle data to the configured "
+    "Discord webhook (no host allowlist). Cards and event replies use built-in or "
+    "operator-configured templates and may include identifiers, titles, status, assignment, "
+    "branch and workspace metadata, relationships and blocking details, comments, event "
+    "actors, reviewers, reasons, summaries, and configured dashboard links; the comment "
+    "excerpt length is configurable. Fixed prerequisite announcements additionally send the "
+    "prerequisite task ID, title, assignee, and up to 140 characters of its body and are not "
+    "template-configurable. The absolute workspace path is off by default and requires "
+    "explicit opt-in. Reads the kanban database read-only and stores thread mapping state "
+    "under <kanban_home>/kanban/plugins/kanban-task-threads/. With an optional existing "
+    "publisher-profile Discord bot token, reads forum and thread metadata; creates or repairs "
+    "managed status tags and emojis; replaces applied tags on plugin-managed threads; renames "
+    "threads; and archives or unarchives them. Discord fetches webhook avatars from the "
+    "configured HTTPS asset origin."
+)
 SEMVER = re.compile(
     r"(?:0|[1-9]\d*)\."
     r"(?:0|[1-9]\d*)\."
@@ -47,6 +68,27 @@ def _upsert_after(document: str, key: str, value: str, *, after: str) -> str:
     return anchor.sub(lambda match: f"{match.group(0)}\n{key}: {value}", document, count=1)
 
 
+def _upsert_sequence_after(document: str, key: str, values: tuple[str, ...], *, after: str) -> str:
+    lines = document.splitlines(keepends=True)
+    matches = [index for index, line in enumerate(lines) if line.startswith(f"{key}:")]
+    if len(matches) > 1:
+        raise ValueError(f"expected at most one top-level {key!r}, found {len(matches)}")
+
+    block = [f"{key}:\n", *(f"  - {value}\n" for value in values)]
+    if matches:
+        start = matches[0]
+        end = start + 1
+        while end < len(lines) and (lines[end].startswith((" ", "\t")) or not lines[end].strip()):
+            end += 1
+        return "".join((*lines[:start], *block, *lines[end:]))
+
+    anchors = [index for index, line in enumerate(lines) if line.startswith(f"{after}:")]
+    if len(anchors) != 1:
+        raise ValueError(f"expected exactly one top-level {after!r}, found {len(anchors)}")
+    insert_at = anchors[0] + 1
+    return "".join((*lines[:insert_at], *block, *lines[insert_at:]))
+
+
 def update_catalog(path: Path, version: str, sha: str) -> None:
     version_match = SEMVER.fullmatch(version)
     if version_match is None or any(
@@ -66,9 +108,12 @@ def update_catalog(path: Path, version: str, sha: str) -> None:
         raise ValueError(f"expected repository {PLUGIN_REPOSITORY}, found {repositories!r}")
 
     updated = _replace_one(document, "sha", sha)
+    updated = _replace_one(updated, "description", f'"{CATALOG_DESCRIPTION}"')
     updated = _replace_one(updated, "version", f'"{version}"')
     image = f"{CATALOG_IMAGE_ROOT}/{sha}/{CATALOG_IMAGE_PATH}"
     updated = _upsert_after(updated, "image", image, after="version")
+    screenshots = tuple(f"{CATALOG_IMAGE_ROOT}/{sha}/{path}" for path in CATALOG_SCREENSHOT_PATHS)
+    updated = _upsert_sequence_after(updated, "screenshots", screenshots, after="image")
     path.write_text(updated)
 
 
