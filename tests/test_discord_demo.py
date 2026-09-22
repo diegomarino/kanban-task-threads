@@ -167,6 +167,9 @@ def test_publish_has_exact_bound_and_never_persists_secret(tmp_path):
         ["tag-8"],
         ["tag-9"],
     ]
+    assert starters[0]["avatar_url"] == (
+        "https://assets.example.test/kanban-task-threads/default.png"
+    )
 
 
 def test_publish_creates_missing_managed_tags_before_opening_posts(tmp_path):

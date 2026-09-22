@@ -79,12 +79,19 @@ def test_invalid_custom_avatar_directory_is_rejected(base_url, message):
     ("kwargs", "message"),
     [
         ({"theme": "thin"}, "theme"),
+        ({"theme": []}, "theme"),
         ({"palette": "transparent"}, "palette"),
+        ({"palette": {}}, "palette"),
     ],
 )
 def test_invalid_official_catalog_selection_is_rejected(kwargs, message):
     with pytest.raises(AvatarConfigError, match=message):
         AvatarSet.official(**kwargs)
+
+
+def test_unhashable_relative_path_override_is_a_config_error():
+    with pytest.raises(AvatarConfigError, match="theme"):
+        AvatarSet.official().relative_path("blocked", theme=["thin"])
 
 
 def test_checked_in_assets_match_the_catalog_and_are_96px_pngs():

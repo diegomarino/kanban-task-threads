@@ -38,16 +38,8 @@ class AvatarSet:
     ):
         self._base_url = self._validated_base_url(base_url)
         self._flat = flat
-        if theme not in self.THEMES:
-            raise AvatarConfigError(
-                f"avatar theme {theme!r} is not supported; choose duotone, fill, or bold"
-            )
-        self.theme = theme
-        if palette not in self.PALETTES:
-            raise AvatarConfigError(
-                f"avatar palette {palette!r} is not supported; choose colored, black, or white"
-            )
-        self.palette = palette
+        self.theme = self._validated_choice("theme", theme, self.THEMES)
+        self.palette = self._validated_choice("palette", palette, self.PALETTES)
 
     @classmethod
     def official(cls, *, theme: str = "duotone", palette: str = "colored"):
@@ -58,6 +50,13 @@ class AvatarSet:
     def custom(cls, base_url: str):
         """Use a caller-owned directory containing flat message-type PNGs."""
         return cls(base_url, flat=True)
+
+    @staticmethod
+    def _validated_choice(name: str, value: str, supported: frozenset[str]) -> str:
+        if not isinstance(value, str) or value not in supported:
+            choices = ", ".join(sorted(supported))
+            raise AvatarConfigError(f"avatar {name} {value!r} is not supported; choose {choices}")
+        return value
 
     @classmethod
     def _validated_base_url(cls, value: str) -> str:
@@ -97,12 +96,10 @@ class AvatarSet:
         key = self.resolve_message_type(message_type)
         if self._flat:
             return f"{key}.png"
-        selected_theme = theme or self.theme
-        if selected_theme not in self.THEMES:
-            raise AvatarConfigError(f"unsupported avatar theme {selected_theme!r}")
-        selected_palette = palette or self.palette
-        if selected_palette not in self.PALETTES:
-            raise AvatarConfigError(f"unsupported avatar palette {selected_palette!r}")
+        selected_theme = self.theme if theme is None else theme
+        selected_theme = self._validated_choice("theme", selected_theme, self.THEMES)
+        selected_palette = self.palette if palette is None else palette
+        selected_palette = self._validated_choice("palette", selected_palette, self.PALETTES)
         return AVATAR_MANIFEST["path_template"].format(
             version=AVATAR_VERSION,
             theme=selected_theme,

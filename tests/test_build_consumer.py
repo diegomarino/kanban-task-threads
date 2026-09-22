@@ -279,3 +279,25 @@ def test_invalid_official_selection_falls_back_to_defaults(entry, caplog):
         "https://diegomarino.github.io/kanban-task-threads/v1/duotone/colored/96px/blocked.png"
     )
     assert any("falling back" in record.message for record in caplog.records)
+
+
+def test_malformed_official_selection_cannot_stop_publication(entry, caplog):
+    import logging
+
+    http = FakeHttp()
+    http.queue(200, {"id": "1", "channel_id": "7", "name": "taskz"})
+    module = entry(WEBHOOK, http=http)
+
+    class Ctx(FakeCtx):
+        def get_config(self, key, default=None):
+            if key == "avatar_theme":
+                return []
+            return default
+
+    with caplog.at_level(logging.WARNING):
+        consumer = module._build_consumer(Ctx())
+
+    assert consumer is not None
+    assert consumer._transport._avatars.url_for("blocked").endswith(
+        "/v1/duotone/colored/96px/blocked.png"
+    )
