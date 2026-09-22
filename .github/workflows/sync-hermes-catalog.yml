@@ -140,12 +140,17 @@ jobs:
             echo "Another catalog PR is already open for this plugin: ${OPEN_PLUGIN_PR_URL}" >&2
             exit 1
           fi
-          PR_JSON="$(gh pr list \
-            --repo "${UPSTREAM_REPOSITORY}" \
-            --head "diegomarino:${CATALOG_BRANCH}" \
-            --state all \
-            --limit 10 \
-            --json state,url)"
+          PR_JSON="$(
+            gh api --method GET "repos/${UPSTREAM_REPOSITORY}/pulls" \
+              -f state=all \
+              -f "head=diegomarino:${CATALOG_BRANCH}" \
+              -f per_page=100 \
+              --paginate --slurp | \
+              jq '[.[][] | {
+                state: (if .merged_at then "MERGED" else (.state | ascii_upcase) end),
+                url: .html_url
+              }]'
+          )"
           PR_COUNT="$(printf '%s' "${PR_JSON}" | jq 'length')"
           if [ "${PR_COUNT}" -gt 1 ]; then
             echo "More than one catalog PR exists for ${CATALOG_BRANCH}; refusing." >&2
@@ -289,12 +294,17 @@ jobs:
             echo "Catalog branch changed before PR creation; refusing." >&2
             exit 1
           fi
-          PR_JSON="$(gh pr list \
-            --repo "${UPSTREAM_REPOSITORY}" \
-            --head "diegomarino:${CATALOG_BRANCH}" \
-            --state all \
-            --limit 10 \
-            --json state,url)"
+          PR_JSON="$(
+            gh api --method GET "repos/${UPSTREAM_REPOSITORY}/pulls" \
+              -f state=all \
+              -f "head=diegomarino:${CATALOG_BRANCH}" \
+              -f per_page=100 \
+              --paginate --slurp | \
+              jq '[.[][] | {
+                state: (if .merged_at then "MERGED" else (.state | ascii_upcase) end),
+                url: .html_url
+              }]'
+          )"
           PR_COUNT="$(printf '%s' "${PR_JSON}" | jq 'length')"
           if [ "${PR_COUNT}" -gt 1 ]; then
             echo "More than one catalog PR exists for ${CATALOG_BRANCH}; refusing." >&2

@@ -159,7 +159,12 @@ def test_catalog_pr_is_a_manual_main_only_workflow_with_a_scoped_credential():
     assert ".head.ref | startswith($prefix)" in workflow
     assert '"${OPEN_PLUGIN_PR_REF}" != "${CATALOG_BRANCH}"' in workflow
     assert 'git ls-remote --heads origin "refs/heads/${CATALOG_BRANCH}"' in workflow
-    assert "--state all" in workflow
+    assert "gh pr list" not in workflow
+    assert workflow.count("repos/${UPSTREAM_REPOSITORY}/pulls") == 3
+    assert workflow.count('-f "head=diegomarino:${CATALOG_BRANCH}"') == 2
+    assert workflow.count("-f state=all") == 2
+    assert ".state | ascii_upcase" in workflow
+    assert 'if .merged_at then "MERGED"' in workflow
     assert '"${PR_STATE}" = "CLOSED"' in workflow
     assert '"${PR_STATE}" = "MERGED"' in workflow
     assert 'git diff --name-only "${UPSTREAM_SHA}" "${REMOTE_SHA}"' in workflow
