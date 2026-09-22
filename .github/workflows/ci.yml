@@ -2,13 +2,47 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [pre-release, main]
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  pr-policy:
+    name: Main PR policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require promotion or Release Please for main
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" != "pull_request" ] || [ "${BASE_REF}" != "main" ]; then
+            exit 0
+          fi
+          if [ "${HEAD_REPOSITORY}" = "${REPOSITORY}" ] && \
+             [ "${HEAD_REF}" = "pre-release" ]; then
+            exit 0
+          fi
+          if [ "${HEAD_REPOSITORY}" = "${REPOSITORY}" ] && \
+             [ "${HEAD_REF}" = "release-please--branches--main" ] && \
+             [ "${PR_AUTHOR}" = "github-actions[bot]" ]; then
+            exit 0
+          fi
+          echo "Only the pre-release promotion or Release Please may target main." >&2
+          exit 1
+
   quality:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
@@ -85,3 +119,26 @@ jobs:
         with:
           sarif_file: plugin-scanner.sarif
           category: ai-plugin-scanner
+
+  release-please:
+    name: Release Please
+    needs: [pr-policy, quality, hermes-validate, plugin-scanner]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Open or update the release PR, or publish a merged release
+        id: release
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

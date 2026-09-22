@@ -24,7 +24,7 @@ optional_env:
     description: >-
       Optional existing publisher bot token; role needs forum-scoped
       MANAGE_THREADS, READ_MESSAGE_HISTORY, and MANAGE_CHANNELS for automatic
-      tag setup
+      tag and emoji setup
     secret: true
 provides_hooks:
   - kanban_task_claimed

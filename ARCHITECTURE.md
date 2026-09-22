@@ -93,9 +93,9 @@ a hook kick collapses that wait.
   Secrets: `KANBAN_TASK_THREADS_WEBHOOK_URL`
   (required; in production an `op://` reference resolved by the profile env,
   never a literal) and `KANBAN_TASK_THREADS_BOT_TOKEN` (optional, ADR-0003 extras).
-  Bot mode reuses or creates its eleven status tags; automatic creation needs
-  `MANAGE_CHANNELS` scoped to the forum, while thread mutation needs
-  `MANAGE_THREADS`.
+  Bot mode reuses or creates its eleven status tags and reconciles their
+  managed emojis; automatic setup needs `MANAGE_CHANNELS` scoped to the forum,
+  while thread mutation needs `MANAGE_THREADS`.
   If non-empty `publisher_profile` does not exactly match `ctx.profile_name`,
   registration returns inert before any of this; empty preserves ADR-0013.
 - **Startup classification**: a real config verdict (missing webhook in a

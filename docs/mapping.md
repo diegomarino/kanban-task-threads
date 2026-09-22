@@ -76,10 +76,11 @@ hook firing (the poll interval covers hook-less kinds like `commented`).
 `transient` — the latter three surface on the `blocked` card's "waiting on"
 line with the reason from the last `blocked` event.
 
-In bot mode these eleven exact tag names are the managed vocabulary. Startup
-reuses existing exact-name matches and creates only missing names, preserving
-all unrelated forum tags. Manual creation is the fallback when the bot lacks
-forum-scoped `MANAGE_CHANNELS`.
+In bot mode these eleven exact tag names and their documented emojis are the
+managed vocabulary. Startup reuses exact-name matches, creates missing names,
+and repairs managed emoji drift while preserving all unrelated forum tags.
+Manual creation of the complete name-and-emoji set is the fallback when the
+bot lacks forum-scoped `MANAGE_CHANNELS`.
 
 ## 4 · Plugin operations → Discord API
 

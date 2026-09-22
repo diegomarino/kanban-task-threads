@@ -34,19 +34,21 @@ WEBHOOK_USERNAME_LIMIT = 80
 # Not configurable (ADR-0006): correctness, not taste.
 _NO_MENTIONS = {"parse": []}
 
-_MANAGED_FORUM_TAG_NAMES = (
-    "triage",
-    "todo",
-    "scheduled",
-    "ready",
-    "running",
-    "blocked",
-    "needs-human",
-    "review",
-    "done",
-    "archived",
-    "failed",
+_MANAGED_FORUM_TAGS = (
+    ("triage", "🔎"),
+    ("todo", "📋"),
+    ("scheduled", "📅"),
+    ("ready", "🟢"),
+    ("running", "🏃"),
+    ("blocked", "⛔"),
+    ("needs-human", "🙋"),
+    ("review", "👀"),
+    ("done", "✅"),
+    ("archived", "📦"),
+    ("failed", "❌"),
 )
+_MANAGED_FORUM_TAG_NAMES = tuple(name for name, _ in _MANAGED_FORUM_TAGS)
+_MANAGED_FORUM_TAG_EMOJIS = dict(_MANAGED_FORUM_TAGS)
 _MAX_FORUM_TAGS = 20
 
 
@@ -256,10 +258,10 @@ class DiscordTransport:
     def prepare_forum(self) -> bool:
         """Ensure the plugin-owned status vocabulary exists in the forum.
 
-        Existing tags are preserved byte-for-byte in the PATCH body. Missing
-        managed names are appended, then Discord's response becomes the
-        authoritative name-to-id cache. Returns whether the forum requires a
-        tag on every newly-created post.
+        Unrelated tags are preserved in the PATCH body. Missing managed names
+        are appended and managed emojis are reconciled, then Discord's response
+        becomes the authoritative name-to-id cache. Returns whether the forum
+        requires a tag on every newly-created post.
         """
         try:
             channel = self._refresh_forum_channel()
@@ -277,19 +279,36 @@ class DiscordTransport:
                 "Discord forums allow at most 20 tags; "
                 f"{len(existing)} exist and {len(missing)} managed tags are missing"
             )
-        if missing:
+        desired = []
+        emoji_drift = False
+        for tag in existing:
+            name = str(tag.get("name"))
+            emoji = _MANAGED_FORUM_TAG_EMOJIS.get(name)
+            if emoji is None:
+                desired.append(tag)
+                continue
+            reconciled = dict(tag)
+            if reconciled.get("emoji_id") is not None or reconciled.get("emoji_name") != emoji:
+                reconciled["emoji_id"] = None
+                reconciled["emoji_name"] = emoji
+                emoji_drift = True
+            desired.append(reconciled)
+        desired.extend(
+            {"name": name, "emoji_name": _MANAGED_FORUM_TAG_EMOJIS[name]} for name in missing
+        )
+        if missing or emoji_drift:
             try:
                 channel = self._call(
                     "PATCH",
                     f"https://discord.com/api/v10/channels/{self._require_forum()}",
-                    {"available_tags": existing + [{"name": name} for name in missing]},
+                    {"available_tags": desired},
                     headers=self._bot_headers(),
                 )
             except TransportError as err:
                 if err.status == 403:
                     raise ForumTagSetupError(
-                        "Discord refused to create the missing status tags; grant the bot "
-                        "Manage Channels on this forum or create the tags manually"
+                        "Discord refused to create or repair the managed status tags; grant "
+                        "the bot Manage Channels on this forum or configure the tags manually"
                     ) from err
                 raise
             self._cache_forum_channel(channel)

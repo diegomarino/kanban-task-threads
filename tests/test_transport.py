@@ -19,6 +19,19 @@ from kanban_task_threads.transport import (
 )
 
 WEBHOOK = "https://discord.com/api/webhooks/123/tok"
+TAG_EMOJIS = {
+    "triage": "🔎",
+    "todo": "📋",
+    "scheduled": "📅",
+    "ready": "🟢",
+    "running": "🏃",
+    "blocked": "⛔",
+    "needs-human": "🙋",
+    "review": "👀",
+    "done": "✅",
+    "archived": "📦",
+    "failed": "❌",
+}
 
 CARD = Card(
     title="fix the build", description="a card", color=0x3BA55D, summary="● running · coder"
@@ -332,8 +345,10 @@ def test_prepare_forum_creates_only_missing_managed_tags_and_caches_response():
         "archived",
         "failed",
     ]
-    resulting_tags = existing + [
-        {"id": f"new-{index}", "name": name} for index, name in enumerate(created_names, start=1)
+    reconciled_existing = [existing[0], {**existing[1], "emoji_name": "🔎"}]
+    resulting_tags = reconciled_existing + [
+        {"id": f"new-{index}", "name": name, "emoji_name": TAG_EMOJIS[name]}
+        for index, name in enumerate(created_names, start=1)
     ]
     http.queue(200, {"id": "777", "flags": 0, "available_tags": resulting_tags})
 
@@ -345,7 +360,10 @@ def test_prepare_forum_creates_only_missing_managed_tags_and_caches_response():
         (
             "PATCH",
             "https://discord.com/api/v10/channels/777",
-            {"available_tags": existing + [{"name": name} for name in created_names]},
+            {
+                "available_tags": reconciled_existing
+                + [{"name": name, "emoji_name": TAG_EMOJIS[name]} for name in created_names]
+            },
         ),
     ]
     assert transport.status_tag_id("done") == "new-8"
@@ -373,7 +391,8 @@ def test_prepare_forum_does_not_patch_when_all_managed_tags_exist():
             "id": "777",
             "flags": 16,
             "available_tags": [
-                {"id": f"tag-{index}", "name": name} for index, name in enumerate(names, start=1)
+                {"id": f"tag-{index}", "name": name, "emoji_name": TAG_EMOJIS[name]}
+                for index, name in enumerate(names, start=1)
             ],
         },
     )
@@ -403,7 +422,8 @@ def test_prepare_forum_refreshes_tag_ids_when_a_lease_retry_calls_it_again():
             "id": "777",
             "flags": 0,
             "available_tags": [
-                {"id": f"old-{index}", "name": name} for index, name in enumerate(names, start=1)
+                {"id": f"old-{index}", "name": name, "emoji_name": TAG_EMOJIS[name]}
+                for index, name in enumerate(names, start=1)
             ],
         },
     )
@@ -413,7 +433,8 @@ def test_prepare_forum_refreshes_tag_ids_when_a_lease_retry_calls_it_again():
             "id": "777",
             "flags": 0,
             "available_tags": [
-                {"id": f"new-{index}", "name": name} for index, name in enumerate(names, start=1)
+                {"id": f"new-{index}", "name": name, "emoji_name": TAG_EMOJIS[name]}
+                for index, name in enumerate(names, start=1)
             ],
         },
     )

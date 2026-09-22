@@ -56,15 +56,16 @@ whole server. This role belongs to the integration and is not manually assigned
 to people.
 
 On the first bot-enabled pass that holds `consume:<board>`, the plugin reads the
-forum's `available_tags`, preserves every existing tag, and appends only missing
-managed names. Running setup under the same fenced lease as publication keeps
+forum's `available_tags`, preserves every unrelated tag, appends missing
+managed names, and restores the managed emojis when they drift. Running setup
+under the same fenced lease as publication keeps
 multiple profile candidates from racing full-list replacements. A successful
 PATCH response supplies the IDs used thereafter. If the combined set would
 exceed Discord's 20-tag limit, or Discord rejects the PATCH because `Manage
 Channels` is absent, that pass publishes nothing and reports an actionable
 error; later passes retry. Operators who do not grant that permission may
-create the complete vocabulary manually; no PATCH is issued when every managed
-name already exists.
+create the complete name-and-emoji vocabulary manually; no PATCH is issued
+when every managed tag already matches.
 
 Both are resolved through Hermes' profile-aware secret scope rather than read
 directly from the process environment, so they resolve per profile. Ship them

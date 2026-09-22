@@ -37,14 +37,14 @@ Successful PATCH response fields are authoritative readback. SQLite
 `last_tag`/`thread_archived` remain cache hints, not claims of external truth.
 
 The status tag mapping is total. The first bot-enabled pass holding the fenced
-board lease reuses exact-name matches and creates any missing managed tags
-while preserving unrelated tags:
+board lease reuses exact-name matches, creates missing managed tags, and
+restores their managed emojis while preserving unrelated tags:
 `triage`, `todo`, `scheduled`, `ready`, `running`, `blocked`, `review`, `done`,
 and `archived` map to the same names; blocked `needs_input` maps to
 `needs-human`; stale maps to `failed`; dependency wait maps to `blocked`.
 These tags are plugin-owned filtering metadata, so manual edits may be
-overwritten. Creating missing forum tags requires `MANAGE_CHANNELS`; applying
-them requires `MANAGE_THREADS`. If the 20-tag limit would be exceeded, or the
+overwritten. Creating or repairing forum tags requires `MANAGE_CHANNELS`;
+applying them requires `MANAGE_THREADS`. If the 20-tag limit would be exceeded, or the
 channel PATCH is forbidden, the pass fails closed without deleting anything.
 When a forum requires a tag, bot mode uses managed `triage` for creation unless
 `discord_applied_tag_ids` explicitly overrides it; webhook-only mode still
@@ -64,7 +64,7 @@ consumption. Timing and level are private process memory only.
   `MANAGE_THREADS` (UI: “Manage Threads and Posts”), and
   `READ_MESSAGE_HISTORY` for archived listing. Automatic tag provisioning also
   needs forum-scoped `MANAGE_CHANNELS`; manually creating the complete managed
-  vocabulary is the fallback.
+  name-and-emoji vocabulary is the fallback.
 - Threads archived outside the active set and latest 25 public archived posts
   are deliberately outside automated repair until they re-enter that window.
 - Pinning is explicit and reversible by clearing `publisher_profile`, but a

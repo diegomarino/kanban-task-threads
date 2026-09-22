@@ -39,7 +39,7 @@ optional capability: detected, never required.
 | `append` | `POST {webhook}?wait=true&thread_id={thread_id}`, optional per-message `username` |
 | `webhook_info` | `GET {webhook}` — returns `channel_id`: the forum is asked, never configured |
 | `forum_requires_tag` | `GET /channels/{id}` with the bot token; `flags & 16` |
-| `prepare_forum` | bot: read `available_tags`; `PATCH /channels/{forum_id}` only when managed names are missing |
+| `prepare_forum` | bot: read `available_tags`; `PATCH /channels/{forum_id}` only when managed names or their emojis drift |
 | `set_status_tag` | bot: `PATCH /channels/{thread_id}` with `applied_tags`; tag names resolved against the forum's `available_tags`, fetched once |
 | `rename` / `set_archived` | bot: `PATCH /channels/{thread_id}` with `name` / `archived` |
 | `list_forum_threads` | bot: `GET /guilds/{guild_id}/threads/active`, filtered by forum, plus `GET /channels/{forum_id}/threads/archived/public?limit=25` |
@@ -55,14 +55,15 @@ Without a bot token none of this runs and the plugin is complete anyway.
 The first bot-enabled pass holding the fenced board lease owns the status-tag
 vocabulary, not the whole forum tag list. Serializing setup with publication
 prevents multiple profile candidates from replacing `available_tags` from
-stale snapshots. It preserves every existing tag and appends only missing names.
+stale snapshots. It preserves every unrelated tag, appends missing managed
+names, and restores the managed emoji vocabulary when it drifts.
 If the holder loses the lease during setup, the pass remains unprepared and the
 next attempt re-reads Discord before reusing any tag IDs.
 Changing the forum's `available_tags` requires `MANAGE_CHANNELS`; applying
-existing IDs to a thread requires `MANAGE_THREADS`. If all managed names already
-exist, no channel PATCH is sent and manual creation is a supported permission
-fallback. The operation fails closed before mutation when existing plus missing
-tags would exceed Discord's limit of 20.
+existing IDs to a thread requires `MANAGE_THREADS`. If every managed name and
+emoji already exists, no channel PATCH is sent and manual creation is a
+supported permission fallback. The operation fails closed before mutation when
+existing plus missing tags would exceed Discord's limit of 20.
 
 **The status tag owns `applied_tags` — a decided limitation.** Setting a
 status tag replaces the thread's whole tag set. The total mapping is
