@@ -184,20 +184,35 @@ def _build_consumer(ctx):
         return None
 
     avatar_base_url = ctx.get_config("avatar_base_url", "") or ""
+    avatar_theme = ctx.get_config("avatar_theme", "duotone") or "duotone"
+    avatar_palette = ctx.get_config("avatar_palette", "colored") or "colored"
+    avatars_enabled = ctx.get_config("avatars_enabled", True)
     avatars = None
-    if avatar_base_url:
-        try:
-            avatars = AvatarSet(
-                avatar_base_url,
-                theme=ctx.get_config("avatar_theme", "duotone") or "duotone",
-                palette=ctx.get_config("avatar_palette", "colored") or "colored",
-            )
-        except AvatarConfigError as exc:
-            logger.error(
-                "kanban-task-threads: invalid avatar configuration (%s); plugin is inactive",
-                exc,
-            )
-            return None
+    if avatars_enabled:
+        if avatar_base_url:
+            if avatar_theme != "duotone" or avatar_palette != "colored":
+                logger.warning(
+                    "kanban-task-threads: avatar_theme and avatar_palette are ignored "
+                    "when avatar_base_url points to a custom directory"
+                )
+            try:
+                avatars = AvatarSet.custom(avatar_base_url)
+            except AvatarConfigError as exc:
+                logger.warning(
+                    "kanban-task-threads: invalid custom avatar directory (%s); "
+                    "continuing without avatars",
+                    exc,
+                )
+        else:
+            try:
+                avatars = AvatarSet.official(theme=avatar_theme, palette=avatar_palette)
+            except AvatarConfigError as exc:
+                logger.warning(
+                    "kanban-task-threads: invalid official avatar selection (%s); "
+                    "falling back to duotone/colored",
+                    exc,
+                )
+                avatars = AvatarSet.official()
 
     tags = tuple(ctx.get_config("discord_applied_tag_ids") or ())
     transport = DiscordTransport(

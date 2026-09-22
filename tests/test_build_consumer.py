@@ -181,7 +181,37 @@ def test_literal_ip_dashboard_url_warns_but_proceeds(entry, caplog):
     assert any("frozen" in r.message or "stable name" in r.message for r in caplog.records)
 
 
-def test_avatar_settings_are_wired_into_the_transport(entry):
+def test_zero_config_uses_the_official_versioned_avatar_catalog(entry):
+    http = FakeHttp()
+    http.queue(200, {"id": "1", "channel_id": "7", "name": "taskz"})
+    module = entry(WEBHOOK, http=http)
+
+    consumer = module._build_consumer(FakeCtx())
+
+    assert consumer._transport._avatars.url_for("blocked") == (
+        "https://diegomarino.github.io/kanban-task-threads/v1/duotone/colored/96px/blocked.png"
+    )
+
+
+def test_avatars_can_be_disabled_explicitly(entry):
+    http = FakeHttp()
+    http.queue(200, {"id": "1", "channel_id": "7", "name": "taskz"})
+    module = entry(WEBHOOK, http=http)
+
+    class Ctx(FakeCtx):
+        def get_config(self, key, default=None):
+            if key == "avatars_enabled":
+                return False
+            return default
+
+    consumer = module._build_consumer(Ctx())
+
+    assert consumer._transport._avatars is None
+
+
+def test_custom_avatar_directory_ignores_official_theme_and_palette(entry, caplog):
+    import logging
+
     http = FakeHttp()
     http.queue(200, {"id": "1", "channel_id": "7", "name": "taskz"})
     module = entry(WEBHOOK, http=http)
@@ -196,17 +226,20 @@ def test_avatar_settings_are_wired_into_the_transport(entry):
         def get_config(self, key, default=None):
             return self.settings.get(key, default)
 
-    consumer = module._build_consumer(Ctx())
+    with caplog.at_level(logging.WARNING):
+        consumer = module._build_consumer(Ctx())
 
     assert consumer._transport._avatars.url_for("blocked") == (
-        "https://assets.example.invalid/ktt/v1/fill/black/96px/blocked.png"
+        "https://assets.example.invalid/ktt/blocked.png"
     )
+    assert any("ignored" in record.message for record in caplog.records)
 
 
-def test_invalid_avatar_settings_fail_closed_before_discord_preflight(entry, caplog):
+def test_invalid_custom_avatar_directory_disables_only_avatars(entry, caplog):
     import logging
 
     http = FakeHttp()
+    http.queue(200, {"id": "1", "channel_id": "7", "name": "taskz"})
     module = entry(WEBHOOK, http=http)
 
     class Ctx(FakeCtx):
@@ -215,11 +248,34 @@ def test_invalid_avatar_settings_fail_closed_before_discord_preflight(entry, cap
                 return "http://mutable.example.invalid/latest"
             return default
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.WARNING):
         consumer = module._build_consumer(Ctx())
 
-    assert consumer is None
-    assert http.calls == []
+    assert consumer is not None
+    assert consumer._transport._avatars is None
+    assert [call[0] for call in http.calls] == ["GET"]
     assert any(
         "avatar" in record.message and "HTTPS" in record.message for record in caplog.records
     )
+
+
+def test_invalid_official_selection_falls_back_to_defaults(entry, caplog):
+    import logging
+
+    http = FakeHttp()
+    http.queue(200, {"id": "1", "channel_id": "7", "name": "taskz"})
+    module = entry(WEBHOOK, http=http)
+
+    class Ctx(FakeCtx):
+        def get_config(self, key, default=None):
+            if key == "avatar_theme":
+                return "thin"
+            return default
+
+    with caplog.at_level(logging.WARNING):
+        consumer = module._build_consumer(Ctx())
+
+    assert consumer._transport._avatars.url_for("blocked") == (
+        "https://diegomarino.github.io/kanban-task-threads/v1/duotone/colored/96px/blocked.png"
+    )
+    assert any("falling back" in record.message for record in caplog.records)

@@ -15,8 +15,8 @@ from kanban_task_threads.avatars import (
 from scripts.render_avatars import render
 
 
-def test_default_duotone_urls_cover_every_message_type():
-    avatars = AvatarSet("https://assets.example.invalid/ktt")
+def test_official_catalog_urls_are_versioned_and_cover_every_message_type():
+    avatars = AvatarSet.official()
 
     assert avatars.theme == "duotone"
     assert avatars.palette == "colored"
@@ -24,62 +24,73 @@ def test_default_duotone_urls_cover_every_message_type():
         message_type: avatars.url_for(message_type) for message_type in AVATAR_MESSAGE_TYPES
     } == {
         message_type: (
-            f"https://assets.example.invalid/ktt/v1/duotone/colored/96px/{message_type}.png"
+            "https://diegomarino.github.io/kanban-task-threads/"
+            f"v1/duotone/colored/96px/{message_type}.png"
         )
         for message_type in AVATAR_MESSAGE_TYPES
     }
 
 
 def test_unknown_message_type_uses_the_default_avatar():
-    avatars = AvatarSet("https://assets.example.invalid/ktt")
+    avatars = AvatarSet.official()
 
     assert avatars.url_for("future_event") == avatars.url_for("default")
 
 
-def test_theme_and_opinionated_palette_are_globally_configurable():
-    avatars = AvatarSet(
-        "https://assets.example.invalid/ktt/",
-        theme="bold",
-        palette="white",
-    )
+def test_official_theme_and_opinionated_palette_are_globally_configurable():
+    avatars = AvatarSet.official(theme="bold", palette="white")
 
     assert (
-        avatars.url_for("blocked")
-        == "https://assets.example.invalid/ktt/v1/bold/white/96px/blocked.png"
+        avatars.url_for("blocked") == "https://diegomarino.github.io/kanban-task-threads/"
+        "v1/bold/white/96px/blocked.png"
     )
     assert avatars.url_for("commented").endswith("/v1/bold/white/96px/commented.png")
+
+
+def test_custom_base_url_is_the_final_directory_for_flat_png_files():
+    avatars = AvatarSet.custom("https://assets.example.invalid/my-ktt-icons/")
+
+    assert avatars.url_for("blocked") == "https://assets.example.invalid/my-ktt-icons/blocked.png"
+    assert avatars.url_for("future_event") == (
+        "https://assets.example.invalid/my-ktt-icons/default.png"
+    )
+
+
+@pytest.mark.parametrize(
+    ("base_url", "message"),
+    [
+        ("http://assets.example.invalid/ktt", "HTTPS"),
+        ("https://user:pass@example.invalid/ktt", "credentials"),
+        ("https://assets.example.invalid/ktt?latest=1", "query"),
+        ("https://assets.example.invalid/ktt?", "query"),
+        ("https://assets.example.invalid/ktt#", "fragment"),
+        ("https://bad host.example/ktt", "whitespace"),
+        ("\x00https://assets.example.invalid/ktt", "control"),
+        ("https://assets.example.invalid/ktt\\avatars", "backslash"),
+        ("https://assets.example.invalid:99999/ktt", "port"),
+    ],
+)
+def test_invalid_custom_avatar_directory_is_rejected(base_url, message):
+    with pytest.raises(AvatarConfigError, match=message):
+        AvatarSet.custom(base_url)
 
 
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"base_url": "http://assets.example.invalid/ktt"}, "HTTPS"),
-        ({"base_url": "https://user:pass@example.invalid/ktt"}, "credentials"),
-        ({"base_url": "https://assets.example.invalid/ktt?latest=1"}, "query"),
-        ({"base_url": "https://assets.example.invalid/ktt?"}, "query"),
-        ({"base_url": "https://assets.example.invalid/ktt#"}, "fragment"),
-        ({"base_url": "https://bad host.example/ktt"}, "whitespace"),
-        ({"base_url": "\x00https://assets.example.invalid/ktt"}, "control"),
-        ({"base_url": "https://assets.example.invalid/ktt\\avatars"}, "backslash"),
-        ({"base_url": "https://assets.example.invalid:99999/ktt"}, "port"),
-        ({"base_url": "https://assets.example.invalid/ktt", "theme": "thin"}, "theme"),
-        (
-            {"base_url": "https://assets.example.invalid/ktt", "palette": "transparent"},
-            "palette",
-        ),
+        ({"theme": "thin"}, "theme"),
+        ({"palette": "transparent"}, "palette"),
     ],
 )
-def test_invalid_avatar_configuration_is_rejected(kwargs, message):
+def test_invalid_official_catalog_selection_is_rejected(kwargs, message):
     with pytest.raises(AvatarConfigError, match=message):
-        AvatarSet(**kwargs)
+        AvatarSet.official(**kwargs)
 
 
 def test_checked_in_assets_match_the_catalog_and_are_96px_pngs():
     root = __import__("pathlib").Path(__file__).resolve().parents[1] / "pages"
     expected = {
-        AvatarSet("https://assets.example.invalid", palette=palette).relative_path(
-            message_type, theme=theme
-        )
+        AvatarSet.official(palette=palette).relative_path(message_type, theme=theme)
         for theme in ("duotone", "fill", "bold")
         for palette in ("colored", "black", "white")
         for message_type in AVATAR_MESSAGE_TYPES

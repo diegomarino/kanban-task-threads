@@ -58,20 +58,24 @@ config_schema:
   discord_applied_tag_ids:
     type: list
     description: Forum tag ids applied to new posts. Required if the forum enforces tags.
+  avatars_enabled:
+    type: bool
+    default: true
+    description: Add message-state avatars. Disable to preserve plain webhook identities.
   avatar_base_url:
     type: str
     default: ''
     description: >-
-      HTTPS origin serving the generated static avatar bundle. Empty disables
-      avatars.
+      HTTPS directory containing custom message-type PNGs. Empty uses the
+      official versioned avatar catalog.
   avatar_theme:
     type: str
     default: duotone
-    description: Global Phosphor avatar weight; duotone, fill, or bold.
+    description: Official-catalog Phosphor weight; duotone, fill, or bold.
   avatar_palette:
     type: str
     default: colored
-    description: Opinionated global avatar palette; colored, black, or white.
+    description: Official-catalog palette; colored, black, or white.
   poll_seconds:
     type: int
     default: 20
