@@ -1,0 +1,348 @@
+name: Sync Hermes Catalog
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Stable release tag to publish; blank selects the latest stable release
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-hermes-catalog
+  cancel-in-progress: false
+
+jobs:
+  sync-hermes-catalog:
+    name: Open Hermes catalog update
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    environment: hermes-catalog
+    permissions:
+      contents: read
+    env:
+      UPSTREAM_REPOSITORY: NousResearch/hermes-agent
+      FORK_REPOSITORY: diegomarino/hermes-agent
+    steps:
+      - name: Check out public release history and automation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          path: plugin
+          persist-credentials: false
+      - name: Resolve and verify the stable release
+        id: release
+        working-directory: plugin
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_TAG: ${{ github.event.inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${REQUESTED_TAG}" ] && \
+             ! [[ "${REQUESTED_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release_tag must be a stable vX.Y.Z tag" >&2
+            exit 1
+          fi
+
+          if [ -n "${REQUESTED_TAG}" ]; then
+            RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${REQUESTED_TAG}")"
+          else
+            RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest")"
+          fi
+          if printf '%s' "${RELEASE_JSON}" | jq -e '.draft == true or .prerelease == true' >/dev/null; then
+            echo "Catalog publication requires a stable, published release" >&2
+            exit 1
+          fi
+
+          RELEASE_TAG="$(printf '%s' "${RELEASE_JSON}" | jq -r '.tag_name')"
+          if ! [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release returned an invalid stable tag: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          if [ -n "${REQUESTED_TAG}" ] && [ "${RELEASE_TAG}" != "${REQUESTED_TAG}" ]; then
+            echo "Release lookup returned an unexpected tag: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+          git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          RELEASE_SHA="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          RELEASE_VERSION="${RELEASE_TAG#v}"
+          MANIFEST_VERSION="$(git show "${RELEASE_SHA}:.release-please-manifest.json" | jq -r '.["."]')"
+          if [ "${MANIFEST_VERSION}" != "${RELEASE_VERSION}" ]; then
+            echo "Release tag and manifest disagree: ${RELEASE_TAG} vs ${MANIFEST_VERSION}" >&2
+            exit 1
+          fi
+          if ! git cat-file -e "${RELEASE_SHA}:docs/assets/catalog-banner.png"; then
+            echo "Release ${RELEASE_TAG} does not contain the catalog banner; refusing." >&2
+            exit 1
+          fi
+          if ! git cat-file -e "${RELEASE_SHA}:docs/assets/catalog-screenshot-full.png"; then
+            echo "Release ${RELEASE_TAG} does not contain the full catalog screenshot; refusing." >&2
+            exit 1
+          fi
+          if ! git cat-file -e "${RELEASE_SHA}:docs/assets/catalog-banner-detail.png"; then
+            echo "Release ${RELEASE_TAG} does not contain the detail catalog screenshot; refusing." >&2
+            exit 1
+          fi
+
+          {
+            echo "version=${RELEASE_VERSION}"
+            echo "sha=${RELEASE_SHA}"
+            echo "tag_name=${RELEASE_TAG}"
+          } >> "${GITHUB_OUTPUT}"
+      - name: Check out the Hermes catalog fork
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.FORK_REPOSITORY }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          path: hermes-agent
+          persist-credentials: false
+      - name: Set up the catalog validator runtime
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+          check-latest: false
+      - name: Install the catalog validator dependency
+        run: python -m pip install pyyaml==6.0.2
+      - name: Inspect prior catalog handoff state
+        id: handoff
+        working-directory: hermes-agent
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          CATALOG_BRANCH="catalog/kanban-task-threads-v${RELEASE_VERSION}"
+          git fetch "https://github.com/${UPSTREAM_REPOSITORY}.git" main
+          UPSTREAM_SHA="$(git rev-parse FETCH_HEAD)"
+          REMOTE_SHA="$(git ls-remote --heads origin "refs/heads/${CATALOG_BRANCH}" | cut -f1)"
+          OPEN_PLUGIN_PRS="$(
+            gh api --method GET "repos/${UPSTREAM_REPOSITORY}/pulls" \
+              -f state=open \
+              -f per_page=100 \
+              --paginate --slurp | \
+              jq \
+                --arg repo "${FORK_REPOSITORY}" \
+                --arg prefix "catalog/kanban-task-threads-v" \
+                '[.[][] | select(
+                  .head.repo.full_name == $repo and
+                  (.head.ref | startswith($prefix))
+                ) | {ref: .head.ref, url: .html_url}]'
+          )"
+          OPEN_PLUGIN_PR_COUNT="$(printf '%s' "${OPEN_PLUGIN_PRS}" | jq 'length')"
+          if [ "${OPEN_PLUGIN_PR_COUNT}" -gt 1 ]; then
+            echo "More than one open catalog PR exists for this plugin; refusing." >&2
+            exit 1
+          fi
+          OPEN_PLUGIN_PR_REF="$(printf '%s' "${OPEN_PLUGIN_PRS}" | jq -r '.[0].ref // empty')"
+          OPEN_PLUGIN_PR_URL="$(printf '%s' "${OPEN_PLUGIN_PRS}" | jq -r '.[0].url // empty')"
+          if [ -n "${OPEN_PLUGIN_PR_REF}" ] && \
+             [ "${OPEN_PLUGIN_PR_REF}" != "${CATALOG_BRANCH}" ]; then
+            echo "Another catalog PR is already open for this plugin: ${OPEN_PLUGIN_PR_URL}" >&2
+            exit 1
+          fi
+          PR_JSON="$(
+            gh api --method GET "repos/${UPSTREAM_REPOSITORY}/pulls" \
+              -f state=all \
+              -f "head=diegomarino:${CATALOG_BRANCH}" \
+              -f per_page=100 \
+              --paginate --slurp | \
+              jq '[.[][] | {
+                state: (if .merged_at then "MERGED" else (.state | ascii_upcase) end),
+                url: .html_url
+              }]'
+          )"
+          PR_COUNT="$(printf '%s' "${PR_JSON}" | jq 'length')"
+          if [ "${PR_COUNT}" -gt 1 ]; then
+            echo "More than one catalog PR exists for ${CATALOG_BRANCH}; refusing." >&2
+            exit 1
+          fi
+          PR_STATE="$(printf '%s' "${PR_JSON}" | jq -r '.[0].state // empty')"
+          PR_URL="$(printf '%s' "${PR_JSON}" | jq -r '.[0].url // empty')"
+
+          {
+            echo "branch=${CATALOG_BRANCH}"
+            echo "upstream_sha=${UPSTREAM_SHA}"
+            echo "remote_sha=${REMOTE_SHA}"
+          } >> "${GITHUB_OUTPUT}"
+
+          if [ "${PR_STATE}" = "CLOSED" ]; then
+            echo "Prior catalog PR was closed without merging: ${PR_URL}" >&2
+            exit 1
+          fi
+          if [ "${PR_STATE}" = "MERGED" ]; then
+            git switch --detach "${UPSTREAM_SHA}"
+            python ../plugin/scripts/update_hermes_catalog.py \
+              plugin-catalog/kanban-task-threads.yaml \
+              "${RELEASE_VERSION}" \
+              "${RELEASE_SHA}"
+            if ! git diff --quiet -- plugin-catalog/kanban-task-threads.yaml; then
+              echo "Merged catalog PR does not contain the expected release pin." >&2
+              exit 1
+            fi
+            python scripts/validate_plugin_catalog.py plugin-catalog/
+            echo "Catalog PR already merged: ${PR_URL}"
+            echo "complete=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [ -z "${REMOTE_SHA}" ]; then
+            if [ "${PR_STATE}" = "OPEN" ]; then
+              echo "Open catalog PR has no source branch: ${PR_URL}" >&2
+              exit 1
+            fi
+            {
+              echo "complete=false"
+              echo "reuse_branch=false"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          git fetch origin "refs/heads/${CATALOG_BRANCH}"
+          FETCHED_SHA="$(git rev-parse FETCH_HEAD)"
+          if [ "${FETCHED_SHA}" != "${REMOTE_SHA}" ]; then
+            echo "Catalog branch changed while it was being inspected; refusing." >&2
+            exit 1
+          fi
+          PARENT_SHA="$(git rev-parse "${REMOTE_SHA}^")"
+          COMMIT_COUNT="$(git rev-list --count "${UPSTREAM_SHA}..${REMOTE_SHA}")"
+          CHANGED_FILES="$(git diff --name-only "${UPSTREAM_SHA}" "${REMOTE_SHA}")"
+          if [ "${PARENT_SHA}" != "${UPSTREAM_SHA}" ] || \
+             [ "${COMMIT_COUNT}" != "1" ] || \
+             [ "${CHANGED_FILES}" != "plugin-catalog/kanban-task-threads.yaml" ]; then
+            echo "Existing catalog branch is not the expected single-file automation commit." >&2
+            exit 1
+          fi
+          git switch --detach "${REMOTE_SHA}"
+          python ../plugin/scripts/update_hermes_catalog.py \
+            plugin-catalog/kanban-task-threads.yaml \
+            "${RELEASE_VERSION}" \
+            "${RELEASE_SHA}"
+          if ! git diff --quiet -- plugin-catalog/kanban-task-threads.yaml; then
+            echo "Existing catalog branch does not contain the expected release pin." >&2
+            exit 1
+          fi
+          python scripts/validate_plugin_catalog.py plugin-catalog/
+          if [ "${PR_STATE}" = "OPEN" ]; then
+            echo "Catalog PR already open: ${PR_URL}"
+            echo "complete=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          {
+            echo "complete=false"
+            echo "reuse_branch=true"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare a new catalog branch
+        id: prepare
+        if: ${{ steps.handoff.outputs.complete != 'true' && steps.handoff.outputs.reuse_branch != 'true' }}
+        working-directory: hermes-agent
+        env:
+          CATALOG_BRANCH: ${{ steps.handoff.outputs.branch }}
+          UPSTREAM_SHA: ${{ steps.handoff.outputs.upstream_sha }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git switch --force-create "${CATALOG_BRANCH}" "${UPSTREAM_SHA}"
+          python ../plugin/scripts/update_hermes_catalog.py \
+            plugin-catalog/kanban-task-threads.yaml \
+            "${RELEASE_VERSION}" \
+            "${RELEASE_SHA}"
+          if git diff --quiet -- plugin-catalog/kanban-task-threads.yaml; then
+            echo "created=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          python scripts/validate_plugin_catalog.py plugin-catalog/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add plugin-catalog/kanban-task-threads.yaml
+          git commit -m "catalog: update kanban-task-threads to v${RELEASE_VERSION}"
+          echo "branch_sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+          echo "prepared=true" >> "${GITHUB_OUTPUT}"
+      - name: Push the new catalog branch
+        id: push
+        if: ${{ steps.prepare.outputs.prepared == 'true' }}
+        working-directory: hermes-agent
+        env:
+          CATALOG_BRANCH: ${{ steps.handoff.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.prepare.outputs.branch_sha }}
+          GH_TOKEN: ${{ secrets.HERMES_CATALOG_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git push \
+            --force-with-lease="refs/heads/${CATALOG_BRANCH}:" \
+            origin \
+            "HEAD:refs/heads/${CATALOG_BRANCH}"
+          {
+            echo "branch_sha=${EXPECTED_SHA}"
+            echo "created=true"
+          } >> "${GITHUB_OUTPUT}"
+      - name: Open the upstream catalog PR
+        if: ${{ steps.handoff.outputs.complete != 'true' && (steps.handoff.outputs.reuse_branch == 'true' || steps.push.outputs.created == 'true') }}
+        working-directory: hermes-agent
+        env:
+          CATALOG_BRANCH: ${{ steps.handoff.outputs.branch }}
+          EXPECTED_SHA: ${{ steps.push.outputs.branch_sha || steps.handoff.outputs.remote_sha }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+          GH_TOKEN: ${{ secrets.HERMES_CATALOG_TOKEN }}
+        run: |
+          set -euo pipefail
+          CURRENT_SHA="$(git ls-remote --heads origin "refs/heads/${CATALOG_BRANCH}" | cut -f1)"
+          if [ "${CURRENT_SHA}" != "${EXPECTED_SHA}" ]; then
+            echo "Catalog branch changed before PR creation; refusing." >&2
+            exit 1
+          fi
+          PR_JSON="$(
+            gh api --method GET "repos/${UPSTREAM_REPOSITORY}/pulls" \
+              -f state=all \
+              -f "head=diegomarino:${CATALOG_BRANCH}" \
+              -f per_page=100 \
+              --paginate --slurp | \
+              jq '[.[][] | {
+                state: (if .merged_at then "MERGED" else (.state | ascii_upcase) end),
+                url: .html_url
+              }]'
+          )"
+          PR_COUNT="$(printf '%s' "${PR_JSON}" | jq 'length')"
+          if [ "${PR_COUNT}" -gt 1 ]; then
+            echo "More than one catalog PR exists for ${CATALOG_BRANCH}; refusing." >&2
+            exit 1
+          fi
+          PR_STATE="$(printf '%s' "${PR_JSON}" | jq -r '.[0].state // empty')"
+          PR_URL="$(printf '%s' "${PR_JSON}" | jq -r '.[0].url // empty')"
+          case "${PR_STATE}" in
+            OPEN)
+              echo "Catalog PR already open: ${PR_URL}"
+              exit 0
+              ;;
+            MERGED)
+              echo "Catalog PR already merged: ${PR_URL}"
+              exit 0
+              ;;
+            CLOSED)
+              echo "Prior catalog PR was closed without merging: ${PR_URL}" >&2
+              exit 1
+              ;;
+            "") ;;
+            *)
+              echo "Unexpected catalog PR state: ${PR_STATE}" >&2
+              exit 1
+              ;;
+          esac
+          gh pr create \
+            --repo "${UPSTREAM_REPOSITORY}" \
+            --base main \
+            --head "diegomarino:${CATALOG_BRANCH}" \
+            --draft \
+            --title "catalog: update kanban-task-threads to v${RELEASE_VERSION}" \
+            --body "Manually requested release metadata update for ${RELEASE_TAG}. Release: https://github.com/diegomarino/kanban-task-threads/releases/tag/${RELEASE_TAG}. Exact release SHA: ${RELEASE_SHA}. The catalog image is pinned to that same commit. Please review the disclosure and capability metadata before merging."

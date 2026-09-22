@@ -5,9 +5,8 @@ own**: the first post is a live status card rewritten in place, and the replies
 are the append-only log. The post body answers *"what is happening now?"*; the
 thread answers *"how did we get here?"*.
 
-![The forum: status-tagged posts per task; a thread's live card and its
-actor-signed log — a block raised, a human approving vault access, the
-rotation, completion](docs/assets/forum-demo.png)
+![Discord forum with managed status tags, task posts, a live status card and
+actor-signed thread updates](docs/assets/catalog-screenshot-full.png)
 
 Webhook replies can also carry a Phosphor avatar selected by message type:
 
@@ -42,28 +41,32 @@ freeze the first one forever (see [docs/transport.md](docs/transport.md)).
 Discord creates and manages this integration role for the bot. Grant the
 permission to that role; it is not a role you manually assign to people.
 If you do not grant `Manage Channels`, create all managed tags manually before
-the first publishing pass; the plugin will reuse them and will not need that
-permission while the full vocabulary remains present.
+the first publishing pass with the documented emojis; the plugin will reuse
+them and will not need that permission while the full vocabulary remains
+present and unchanged.
 
 ## Install
 
-Until the catalog entry lands, a direct GitHub install is treated as an
-unreviewed community source. Hermes scans the whole repository — including
-tests, CI and documentation — before installing it:
+The reviewed catalog entry is the normal install path:
+
+```bash
+hermes plugins install kanban-task-threads
+hermes plugins enable kanban-task-threads   # opt-in allow-list
+```
+
+A direct GitHub install remains available for unreleased revisions, but Hermes
+treats it as an unreviewed community source and scans the whole repository —
+including tests, CI and documentation — before installing it:
 
 ```bash
 hermes plugins install diegomarino/kanban-task-threads
-hermes plugins enable kanban-task-threads   # opt-in allow-list
+hermes plugins enable kanban-task-threads
 ```
 
 If a future revision reports `CAUTION`, review every finding before repeating
 the command with `--force`; that flag cannot override a `DANGEROUS` verdict.
-Do not disable install-time scanning. Once the plugin is in the Hermes
-catalog, use the catalog name and its reviewed, pinned commit instead:
-
-```bash
-hermes plugins install kanban-task-threads
-```
+Do not disable install-time scanning. Prefer the catalog name and its reviewed,
+pinned commit for normal installations.
 
 Set the secret in your profile's environment (through your secret manager —
 e.g. a 1Password `op://` reference — never a literal in config):
@@ -88,10 +91,12 @@ reading the channel list can tell which board publishes where. One deployment
 serves one board; point each board's deployment at its own forum's webhook.
 
 > **Managed tags:** with a bot token, the first pass holding the board lease
-> reuses or creates the exact forum tags `triage`, `todo`, `scheduled`, `ready`, `running`, `blocked`,
-> `needs-human`, `review`, `done`, `archived`, and `failed`. Existing unrelated
-> tags are preserved. Discord permits at most 20 forum tags, so the pass fails
-> closed rather than deleting anything if the combined set will not fit.
+> reuses or creates the exact forum tags `🔎 triage`, `📋 todo`, `📅 scheduled`,
+> `🟢 ready`, `🏃 running`, `⛔ blocked`, `🙋 needs-human`, `👀 review`,
+> `✅ done`, `📦 archived`, and `❌ failed`. It also repairs missing or changed
+> emojis on those managed names. Existing unrelated tags are preserved.
+> Discord permits at most 20 forum tags, so the pass fails closed rather than
+> deleting anything if the combined set will not fit.
 >
 > **Forums that require tags:** the bot path automatically uses managed
 > `triage` as the creation tag when no `discord_applied_tag_ids` override is
@@ -110,9 +115,10 @@ All optional, under `plugins.entries.<id>.settings`:
 | `reply_on` | sensible set | Event kinds that earn a reply in the thread |
 | `include_workspace_path` | `false` | Publish the absolute workspace path on the card (see Privacy) |
 | `discord_applied_tag_ids` | `[]` | Optional creation-tag override. Required only for webhook-only operation in a forum that enforces a tag; bot mode otherwise bootstraps with managed `triage` |
-| `avatar_base_url` | — | HTTPS origin of the generated static avatar bundle; blank keeps avatars off |
-| `avatar_theme` | `duotone` | Global Phosphor weight: `duotone`, `fill`, or `bold` |
-| `avatar_palette` | `colored` | Opinionated global palette: `colored`, `black`, or `white` |
+| `avatars_enabled` | `true` | Add message-state avatars; `false` preserves plain webhook identities |
+| `avatar_base_url` | official catalog | Optional HTTPS directory containing 12 custom PNGs; blank uses the official versioned catalog |
+| `avatar_theme` | `duotone` | Official-catalog Phosphor weight: `duotone`, `fill`, or `bold`; ignored with a custom directory |
+| `avatar_palette` | `colored` | Official-catalog palette: `colored`, `black`, or `white`; ignored with a custom directory |
 | `poll_seconds` | `20` | Seconds between passes when no hook kicks arrive |
 | `stale_after_seconds` | `600` | Heartbeat age after which a running task renders as stale |
 | `dashboard_url` | — | Task page URL; may contain `{task_id}` and `{board}`. Powers the card link and each reply's trailing `[#]` (without it, `[#]` jumps to the card in-app). **Links are forever**: every URL you publish is frozen in Discord permanently, so use a stable *name* that resolves from every device you click from — never an IP (the plugin warns on literal IPs), never anything discovered at boot |
@@ -145,38 +151,56 @@ just enough to retain the complete message type. When avatars are disabled,
 usernames remain unchanged and system observations continue using the webhook's
 own identity.
 
-The repository includes 96 px PNGs for all three themes and palettes under
-`pages/v1/`, plus their Phosphor 2.1.1 SVG sources, render manifest, and license
-under `assets/avatars/`. `colored` is the approved semantic palette; `black`
-uses a black glyph on a white circle and `white` uses a white glyph on a black
-circle. Phosphor's native 20% duotone layer produces the secondary grey without
-inventing a second icon color. Each published version also carries the Phosphor
-MIT notice beside its manifest.
+With no avatar settings, the plugin uses the official `duotone`/`colored`
+catalog. The repository includes 96 px PNGs for all three themes and palettes
+under `pages/v1/`, plus their Phosphor 2.1.1 SVG sources, render manifest, and
+license under `assets/avatars/`. `colored` is the approved semantic palette;
+`black` uses a black glyph on a white circle and `white` uses a white glyph on
+a black circle. Phosphor's native 20% duotone layer produces the secondary grey
+without inventing a second icon color.
 
 The checked-in workflow publishes `pages/` with GitHub's official Pages actions
-when that directory changes on `main`. Enable **GitHub Actions** as the Pages
-source once in repository settings, let the workflow deploy, verify a PNG, then
-configure the site root:
+when that directory changes on `main`. The built-in URL contract is:
 
-```yaml
-avatar_base_url: https://example.github.io/kanban-task-threads
-avatar_theme: duotone
-avatar_palette: colored
+```text
+https://diegomarino.github.io/kanban-task-threads/
+  v1/{theme}/{palette}/96px/{message_type}.png
 ```
 
-The local and published manifests define the path contract
-`v1/{theme}/{palette}/96px/{message_type}.png`; the runtime reads the local copy
-and never fetches configuration from Pages. A significant visual redesign bumps
-the manifest to `v2` and keeps `v1` checked in. The renderer requires
-`rsvg-convert` and performs no network access:
+The bundled manifest selects `v1`; it is not a user setting. A significant
+visual redesign moves the plugin to `v2`, while `v1` remains published for old
+installations and messages.
+
+For custom artwork, `avatar_base_url` is the **final directory** containing
+`default.png`, `commented.png`, `blocked.png`, `unblocked.png`,
+`review_requested.png`, `changes_requested.png`, `completed.png`, `gave_up.png`,
+`crashed.png`, `timed_out.png`, `reclaimed.png`, and `archived.png`. The plugin
+appends only the filename—never its own version, theme, palette, or size:
+
+```yaml
+avatar_base_url: https://assets.example.com/hermes-avatars
+```
+
+```text
+https://assets.example.com/hermes-avatars/blocked.png
+```
+
+The custom directory must be public HTTPS without authentication. It needs no
+manifest. Theme and palette settings are ignored in custom mode; choose a
+different collection by changing the directory URL. Invalid cosmetic settings
+fall back or disable only avatars, never task publication. Set
+`avatars_enabled: false` to opt out explicitly. Full operational details are in
+[Avatar customization and self-hosting](docs/configuration.md#avatar-customization-and-self-hosting).
+
+The renderer for the official catalog requires `rsvg-convert` and performs no
+network access:
 
 ```bash
 python3 scripts/render_avatars.py
 ```
 
-Do not point `avatar_base_url` at a mutable branch or third-party icon URL. The
-runtime never hotlinks Phosphor, uploads assets, probes the origin, or creates
-hidden Discord messages to host files. See
+The runtime never hotlinks Phosphor, uploads assets, probes an origin, or
+creates hidden Discord messages to host files. See
 [ADR-0015](docs/adr/0015-static-avatar-assets.md).
 
 ## Privacy and egress — read before enabling

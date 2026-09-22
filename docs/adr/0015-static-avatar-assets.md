@@ -30,8 +30,8 @@ The official GitHub Pages workflow deploys the checked-in `pages/` directory
 after it changes on `main`, once an administrator selects GitHub Actions as the
 repository's Pages source. The workflow has read-only repository access and
 uses the dedicated Pages and OIDC permissions; it does not commit generated
-files or maintain a publication branch. `avatar_base_url` names the HTTPS site
-root. Blank means disabled, preserving existing payloads.
+files or maintain a publication branch. With no avatar settings, the runtime
+uses that official catalog.
 
 The versioned delivery contract is:
 
@@ -41,9 +41,14 @@ The versioned delivery contract is:
 
 The runtime never uploads assets, adds message attachments, embeds avatar
 images, or fetches Phosphor. It only selects a URL. Unknown future event kinds
-use `default`; non-HTTPS origins, credentials, query strings, unsupported
-themes, unsupported palettes, control characters, and backslashes are rejected
-before the consumer starts.
+use `default`. The official theme and palette are closed choices; invalid ones
+fall back to `duotone`/`colored` without stopping publication.
+
+`avatar_base_url` instead selects a caller-owned final directory. Custom mode
+appends only `{message_type}.png`: it does not impose the official version,
+theme, palette, or size hierarchy and it does not fetch a remote manifest. A
+custom host needs the twelve documented filenames. Invalid custom origins
+disable only avatars. `avatars_enabled: false` is the explicit opt-out.
 
 Discord does not document a control that forces consecutive webhook messages
 into separate author groups. Observed clients may group equal usernames and
@@ -76,5 +81,6 @@ shortening only an overlong profile id, with `…` marking the cut.
 - GitHub Pages is static project hosting, not a CDN or availability guarantee.
   The plugin cannot prove that every public asset is reachable without making
   external requests, so operators verify one path before activation.
-- Keeping avatars off until the Pages site or another HTTPS origin is explicitly
-  configured avoids hidden egress and hidden Discord uploads.
+- Zero-configuration installs ask Discord to fetch project-owned GitHub Pages
+  assets. Operators who prohibit that egress disable avatars explicitly or
+  provide their own public HTTPS directory.

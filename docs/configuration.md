@@ -56,15 +56,16 @@ whole server. This role belongs to the integration and is not manually assigned
 to people.
 
 On the first bot-enabled pass that holds `consume:<board>`, the plugin reads the
-forum's `available_tags`, preserves every existing tag, and appends only missing
-managed names. Running setup under the same fenced lease as publication keeps
+forum's `available_tags`, preserves every unrelated tag, appends missing
+managed names, and restores the managed emojis when they drift. Running setup
+under the same fenced lease as publication keeps
 multiple profile candidates from racing full-list replacements. A successful
 PATCH response supplies the IDs used thereafter. If the combined set would
 exceed Discord's 20-tag limit, or Discord rejects the PATCH because `Manage
 Channels` is absent, that pass publishes nothing and reports an actionable
 error; later passes retry. Operators who do not grant that permission may
-create the complete vocabulary manually; no PATCH is issued when every managed
-name already exists.
+create the complete name-and-emoji vocabulary manually; no PATCH is issued
+when every managed tag already matches.
 
 Both are resolved through Hermes' profile-aware secret scope rather than read
 directly from the process environment, so they resolve per profile. Ship them
@@ -132,31 +133,74 @@ matters (ADR-0006):
 - **Not templatable — correctness:** when the card re-renders, idempotency,
   retry policy, truncation limits, `allowed_mentions`.
 
-### Static message avatars
+### Avatar customization and self-hosting
 
-`avatar_base_url` enables the Phosphor message-state avatars. It must be an
-absolute HTTPS URL without credentials, query, fragment, control characters,
-or backslashes. The plugin appends the deterministic asset path; it does not
-fetch or validate the origin:
+Avatars are enabled by default. With no avatar settings, the plugin uses its
+official, immutable catalog:
 
 ```text
-{avatar_base_url}/v1/{theme}/{palette}/96px/{message_type}.png
+https://diegomarino.github.io/kanban-task-threads/
+  v1/{theme}/{palette}/96px/{message_type}.png
 ```
 
-`avatar_theme` applies globally and accepts `duotone` (default), `fill`, or
-`bold`. `avatar_palette` applies globally and accepts the opinionated sets
-`colored` (default), `black`, or `white`. Colors are deliberately not settings:
-the semantic palette is part of the reviewed visual contract, while the two
-monochrome palettes use black-on-white and white-on-black circles so neither
-depends on Discord's client background. Unknown themes and palettes are config
-verdicts: startup logs the problem and leaves the plugin inactive rather than
-emitting broken payloads.
+`avatar_theme` selects `duotone` (default), `fill`, or `bold`.
+`avatar_palette` selects `colored` (default), `black`, or `white`. These two
+settings apply only to the official catalog. An unknown value logs a warning
+and falls back to `duotone`/`colored`; cosmetic configuration never stops task
+publication.
+
+The plugin's bundled manifest owns `v1` and `96px`; neither is configurable.
+They are compatibility coordinates, not branding. When a future plugin adopts
+`v2`, it will request the `v2` tree automatically and the official host will
+retain `v1` for older installations and already-published messages.
+
+#### Custom directory
+
+Set `avatar_base_url` to a public HTTPS **directory**, not a site root. Custom
+mode appends only `{message_type}.png`; it never appends the official version,
+theme, palette, or size:
+
+```yaml
+avatar_base_url: https://assets.example.com/hermes-avatars
+```
+
+```text
+https://assets.example.com/hermes-avatars/blocked.png
+```
+
+The directory needs these 12 files:
+
+```text
+default.png
+commented.png
+blocked.png
+unblocked.png
+review_requested.png
+changes_requested.png
+completed.png
+gave_up.png
+crashed.png
+timed_out.png
+reclaimed.png
+archived.png
+```
+
+Unknown future message types use `default.png`. The server must expose the
+files over HTTPS without credentials, query parameters, or redirects that
+require authentication. A custom directory needs no manifest and owns its own
+layout above this final directory. To switch collections, change the URL.
+`avatar_theme` and `avatar_palette` are ignored in custom mode and produce an
+informational warning when set away from their defaults.
+
+An invalid custom URL logs a warning and disables avatars only. Set
+`avatars_enabled: false` to opt out explicitly while preserving the original
+webhook identities.
 
 The source manifest and SVGs live under `assets/avatars/`; the renderer writes
 the complete static bundle and published manifest under `pages/v1/`. The Pages
-workflow deploys that directory after it reaches `main`. Blank
-`avatar_base_url` disables avatars and ignores theme/palette settings,
-preserving the pre-feature payload exactly (ADR-0015).
+workflow deploys that directory after it reaches `main`. The runtime reads the
+bundled manifest for the official catalog but never fetches a remote manifest
+or probes either host (ADR-0015).
 
 Templates render through `str.format_map` over a flat dict of pre-stringified
 scalars, via a Formatter that rejects any field containing `.` or `[` and all
