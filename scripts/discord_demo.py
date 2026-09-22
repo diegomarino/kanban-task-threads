@@ -42,8 +42,7 @@ DEFAULT_RUN_ID = "catalog-v1"
 DEFAULT_RECEIPT_DIR = REPO / ".sandbox" / "discord-demo"
 DEMO_THREAD_NAME_LIMIT = 30
 DEFAULT_AVATAR_BASE_URL = (
-    "https://raw.githubusercontent.com/diegomarino/kanban-task-threads/"
-    "e14bf61b538f5dc1425bc4c3bef7f12f0c212854/pages"
+    "https://diegomarino.github.io/kanban-task-threads/v1/duotone/colored/96px"
 )
 
 
@@ -318,7 +317,7 @@ def publish(
     effective_anchor = int(existing.get("anchor", anchor)) if existing else anchor
     posts = scenario(anchor=effective_anchor)
     digest = _digest(posts, anchor=effective_anchor, avatar_base_url=avatar_base_url)
-    avatars = AvatarSet(avatar_base_url)
+    avatars = AvatarSet.custom(avatar_base_url)
     preflight = DiscordTransport(http, url).webhook_info()
     actual_channel_id = str(preflight.get("channel_id") or "")
     if actual_channel_id != expected_channel_id:
