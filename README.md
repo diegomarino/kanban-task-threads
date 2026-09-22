@@ -5,9 +5,8 @@ own**: the first post is a live status card rewritten in place, and the replies
 are the append-only log. The post body answers *"what is happening now?"*; the
 thread answers *"how did we get here?"*.
 
-![The forum: status-tagged posts per task; a thread's live card and its
-actor-signed log — a block raised, a human approving vault access, the
-rotation, completion](docs/assets/forum-demo.png)
+![Discord forum with managed status tags, task posts, a live status card and
+actor-signed thread updates](docs/assets/catalog-screenshot-full.png)
 
 Webhook replies can also carry a Phosphor avatar selected by message type:
 
@@ -42,28 +41,32 @@ freeze the first one forever (see [docs/transport.md](docs/transport.md)).
 Discord creates and manages this integration role for the bot. Grant the
 permission to that role; it is not a role you manually assign to people.
 If you do not grant `Manage Channels`, create all managed tags manually before
-the first publishing pass; the plugin will reuse them and will not need that
-permission while the full vocabulary remains present.
+the first publishing pass with the documented emojis; the plugin will reuse
+them and will not need that permission while the full vocabulary remains
+present and unchanged.
 
 ## Install
 
-Until the catalog entry lands, a direct GitHub install is treated as an
-unreviewed community source. Hermes scans the whole repository — including
-tests, CI and documentation — before installing it:
+The reviewed catalog entry is the normal install path:
+
+```bash
+hermes plugins install kanban-task-threads
+hermes plugins enable kanban-task-threads   # opt-in allow-list
+```
+
+A direct GitHub install remains available for unreleased revisions, but Hermes
+treats it as an unreviewed community source and scans the whole repository —
+including tests, CI and documentation — before installing it:
 
 ```bash
 hermes plugins install diegomarino/kanban-task-threads
-hermes plugins enable kanban-task-threads   # opt-in allow-list
+hermes plugins enable kanban-task-threads
 ```
 
 If a future revision reports `CAUTION`, review every finding before repeating
 the command with `--force`; that flag cannot override a `DANGEROUS` verdict.
-Do not disable install-time scanning. Once the plugin is in the Hermes
-catalog, use the catalog name and its reviewed, pinned commit instead:
-
-```bash
-hermes plugins install kanban-task-threads
-```
+Do not disable install-time scanning. Prefer the catalog name and its reviewed,
+pinned commit for normal installations.
 
 Set the secret in your profile's environment (through your secret manager —
 e.g. a 1Password `op://` reference — never a literal in config):
@@ -88,10 +91,12 @@ reading the channel list can tell which board publishes where. One deployment
 serves one board; point each board's deployment at its own forum's webhook.
 
 > **Managed tags:** with a bot token, the first pass holding the board lease
-> reuses or creates the exact forum tags `triage`, `todo`, `scheduled`, `ready`, `running`, `blocked`,
-> `needs-human`, `review`, `done`, `archived`, and `failed`. Existing unrelated
-> tags are preserved. Discord permits at most 20 forum tags, so the pass fails
-> closed rather than deleting anything if the combined set will not fit.
+> reuses or creates the exact forum tags `🔎 triage`, `📋 todo`, `📅 scheduled`,
+> `🟢 ready`, `🏃 running`, `⛔ blocked`, `🙋 needs-human`, `👀 review`,
+> `✅ done`, `📦 archived`, and `❌ failed`. It also repairs missing or changed
+> emojis on those managed names. Existing unrelated tags are preserved.
+> Discord permits at most 20 forum tags, so the pass fails closed rather than
+> deleting anything if the combined set will not fit.
 >
 > **Forums that require tags:** the bot path automatically uses managed
 > `triage` as the creation tag when no `discord_applied_tag_ids` override is
