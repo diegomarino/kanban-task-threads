@@ -115,6 +115,40 @@ def test_release_waits_for_every_validation_job_and_exports_release_identity():
     }
 
 
+def test_pre_release_opens_or_reuses_one_promotion_pr_after_validation():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    promotion = _job_block(workflow, "promotion-pr")
+
+    assert "needs: [pr-policy, quality, hermes-validate, plugin-scanner]" in promotion
+    assert "github.event_name == 'push'" in promotion
+    assert "github.ref == 'refs/heads/pre-release'" in promotion
+    assert _job_permissions(workflow, "promotion-pr") == {
+        "contents": "read",
+        "pull-requests": "write",
+    }
+    assert "repos/${GITHUB_REPOSITORY}/git/ref/heads/pre-release" in promotion
+    assert 'if [ "${CURRENT_SHA}" != "${GITHUB_SHA}" ]; then' in promotion
+    assert "pre-release advanced while this run was validating" in promotion
+    assert "repos/${GITHUB_REPOSITORY}/compare/main...pre-release" in promotion
+    assert 'if [ "${AHEAD_BY}" -eq 0 ]; then' in promotion
+    assert "repos/${GITHUB_REPOSITORY}/pulls" in promotion
+    assert "-f state=open" in promotion
+    assert "-f base=main" in promotion
+    assert '-f "head=${GITHUB_REPOSITORY_OWNER}:pre-release"' in promotion
+    assert "--paginate --slurp" in promotion
+    assert 'if [ "${OPEN_PR_COUNT}" -gt 1 ]; then' in promotion
+    assert "gh pr edit" in promotion
+    assert "gh pr create" in promotion
+    assert "--base main" in promotion
+    assert "--head pre-release" in promotion
+    assert 'PROMOTION_TITLE="chore(release): promote pre-release to main"' in promotion
+    assert "Create a merge commit" in promotion
+    assert promotion.count('--title "${PROMOTION_TITLE}"') == 2
+    assert promotion.count('--body "${PROMOTION_BODY}"') == 2
+    assert "secrets.GITHUB_TOKEN" in promotion
+    assert "HERMES_CATALOG_TOKEN" not in promotion
+
+
 def test_main_pr_policy_allows_only_promotion_and_release_please():
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     policy = _job_block(workflow, "pr-policy")

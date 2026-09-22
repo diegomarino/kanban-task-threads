@@ -120,6 +120,76 @@ jobs:
           sarif_file: plugin-scanner.sarif
           category: ai-plugin-scanner
 
+  promotion-pr:
+    name: Open pre-release promotion PR
+    needs: [pr-policy, quality, hermes-validate, plugin-scanner]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/pre-release' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Open or reuse the promotion PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROMOTION_TITLE="chore(release): promote pre-release to main"
+          PROMOTION_BODY="Promotes the validated pre-release branch to main. Merge this PR with **Create a merge commit** (not squash or rebase) so pre-release remains an ancestor of main. After the merge, Release Please will open the separate version and changelog PR; no release is published until that second PR is merged. The Hermes catalog handoff remains manual."
+
+          CURRENT_SHA="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/pre-release" --jq '.object.sha'
+          )"
+          if [ "${CURRENT_SHA}" != "${GITHUB_SHA}" ]; then
+            echo "pre-release advanced while this run was validating; the newer run owns promotion."
+            exit 0
+          fi
+
+          AHEAD_BY="$(
+            gh api "repos/${GITHUB_REPOSITORY}/compare/main...pre-release" --jq '.ahead_by'
+          )"
+          if [ "${AHEAD_BY}" -eq 0 ]; then
+            echo "pre-release has no commits to promote."
+            exit 0
+          fi
+
+          OPEN_PRS="$(
+            gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls" \
+              -f state=open \
+              -f base=main \
+              -f "head=${GITHUB_REPOSITORY_OWNER}:pre-release" \
+              -f per_page=100 \
+              --paginate --slurp | \
+              jq \
+                --arg repo "${GITHUB_REPOSITORY}" \
+                '[.[][] | select(
+                  .head.repo.full_name == $repo and
+                  .head.ref == "pre-release" and
+                  .base.ref == "main"
+                ) | {url: .html_url}]'
+          )"
+          OPEN_PR_COUNT="$(printf '%s' "${OPEN_PRS}" | jq 'length')"
+          if [ "${OPEN_PR_COUNT}" -gt 1 ]; then
+            echo "More than one pre-release promotion PR is open; refusing." >&2
+            exit 1
+          fi
+          if [ "${OPEN_PR_COUNT}" -eq 1 ]; then
+            PROMOTION_PR_URL="$(printf '%s' "${OPEN_PRS}" | jq -r '.[0].url')"
+            gh pr edit "${PROMOTION_PR_URL}" \
+              --title "${PROMOTION_TITLE}" \
+              --body "${PROMOTION_BODY}"
+            printf 'Promotion PR already open and normalized: %s\n' "${PROMOTION_PR_URL}"
+            exit 0
+          fi
+
+          gh pr create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base main \
+            --head pre-release \
+            --title "${PROMOTION_TITLE}" \
+            --body "${PROMOTION_BODY}"
+
   release-please:
     name: Release Please
     needs: [pr-policy, quality, hermes-validate, plugin-scanner]
