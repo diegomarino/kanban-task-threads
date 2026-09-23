@@ -1,66 +1,97 @@
-# Testing: layers, cheapest first
+# Testing
 
-The whole state machine is reachable without agents, credentials or network,
-because every kanban lifecycle verb writes real `task_events` rows and a
-Hermes home is just a directory and two environment variables. The layers,
-each proving what the previous one cannot:
+Start with the unit suite and lint checks, then use the integration layer that
+exercises the boundary being changed. Most checks run without agents,
+credentials or network access. Live Discord checks are a separate, explicit
+step.
 
-| Layer | Command | Needs | Proves | Cannot reach |
-|---|---|---|---|---|
-| Unit | `./scripts/sandbox test` | uv | rendering, truncation, avatar URL/config/payload/asset completeness, template rejection, store CAS/lease/fencing, consumer failure policy, profile pinning, tag provisioning/limits, bulk metadata parsing/repair/backoff, runtime lifecycle, startup classification, entry-point contract | Hermes |
-| Runtime load | `./scripts/sandbox doctor` | hermes | `register()` loads through the real plugin loader (temp home, sockets blocked) | the network |
-| End-to-end, no network | `./scripts/sandbox task && ./scripts/sandbox consume` | hermes | real event rows → one post, replies in order, durable cursor (second run silent), via a console transport | Discord |
-| Live, bounded | `scripts/live_run.py` | a test forum's webhook | the real webhook path: create, in-place edit, reply | — |
+## Validation layers
 
-Run the suite through `./scripts/sandbox test`; `uv` provisions the pinned
-Python and pytest environment consistently for contributors and CI.
+| Layer | Command | Requirements | Coverage |
+|---|---|---|---|
+| Unit | `./scripts/sandbox test` | uv | Rendering, transport payloads, SQLite state, leases, cursor handling, failure policy and runtime lifecycle |
+| Lint | `./scripts/sandbox lint` | uv | Ruff lint and formatting |
+| Runtime load | `./scripts/sandbox doctor` | Hermes | Registration through the real plugin loader, in a temporary home with sockets blocked |
+| Deferred startup | `path/to/hermes/python scripts/check_startup.py` | Hermes' Python interpreter | Profile scopes, hook-less startup, retry, unload and a local consumer pass |
+| Local event flow | `./scripts/sandbox up`, then `./scripts/sandbox task`, then `./scripts/sandbox consume` | Hermes | Real task events consumed through a console transport, with persistent local state |
+| Live delivery | `python3 scripts/live_run.py <sandbox-board.db>` | Dedicated test forum and credentials | One consumer pass through the real Discord transport |
 
-## The sandbox
+The unit and lint commands provision the tool versions pinned by the project.
+CI runs the Python version matrix, Hermes compatibility checks and public plugin
+scanner. Local checks do not establish that CI or live delivery has passed.
 
-`HERMES_HOME` may point at a real deployment, so **no bare `hermes` command is
-ever run from this repo**. `scripts/sandbox` overrides
-`HERMES_HOME`/`HERMES_KANBAN_HOME` on
-every call, refuses to operate on anything outside `.sandbox/`, and refuses to
-delete anything that looks like a real home. `sandbox task` walks a task
-through comment → blocked → unblocked → completed — five real event rows, no
-LLM, no worker.
+## Registration and deferred startup
 
-## What the doubles are
+Registration and startup are distinct contracts. `register()` installs hooks,
+an unload callback and a thread that waits before building the consumer.
+Successful plugin validation therefore does not establish that the deferred
+build can resolve the runtime's APIs or initialize a consumer.
 
-- `FakeHttp` (tests/conftest.py) — records `(method, url, body)` and replays
-  canned responses; headers kept separately. What `DiscordTransport` is tested
-  against; the allowed-mentions and truncation rules are asserted on every
-  recorded body.
-- `FakeTransport` — records seam operations and raises queued errors per
-  operation; its in-memory thread inventory makes webhook-then-bot metadata
-  repair and audit scheduling testable without Discord.
-- `make_board` — a real SQLite file with the real tables' shape (`tasks`,
-  `task_events`, `task_links`); the consumer is tested against actual SQL, not
-  mocks of it.
-- `ConsoleTransport` (scripts/consume_sandbox.py) — the seam printed to
-  stdout; what `sandbox consume` runs.
+Run `check_startup.py` with the Python interpreter belonging to the Hermes
+installation being tested. It launches a child with a synthetic environment and
+temporary homes, and blocks sockets and subprocesses before importing Hermes.
+It exercises the actual profile, hydration and secret-scope APIs supplied by
+that installation.
 
-## Tests that are pins, not TDD
+The checks cover:
 
-Most of the suite was written red-first. A few tests exist instead to make a
-*decision* expensive to reverse accidentally — they passed the moment they
-were written, on purpose:
+- The process home and a distinct registered profile, including identity
+  preservation when an attempt carries another context.
+- Profile-file refresh, legitimate launch credentials and isolation under
+  multiplexing.
+- Deferred startup without hook traffic, retry after a transient failure and
+  thread shutdown through the unload callback.
+- The real consumer build and an empty pass over temporary SQLite, with HTTP
+  replaced by a deterministic response.
 
-- cards never carry `username` (the signature rule; the tempting "fix" builds
-  the frozen-assignee bug),
-- every call body carries `allowed_mentions: {"parse": []}`,
-- checked-in avatar assets exactly cover all 12 message types in all 3 themes
-  and all 3 opinionated palettes, and are 96 px PNGs,
-- the manifest's `provides_hooks` equals exactly what `register()` registers
-  (`validate` fails on drift),
-- every registered hook callback accepts arbitrary `**kwargs` (`doctor` errors
-  on drift),
-- after the unload callback, no plugin thread survives and the lease is free
-  (the orphan-consumer regression).
+Lifecycle checks use an in-memory consumer observer. API-specific checks report
+a skip when the selected Hermes installation does not provide that API; the
+unit suite also covers optional-module presence, absence and internal errors.
+CI runs the startup check alongside registration validation against pinned
+Hermes versions.
 
-## The live layer is bounded by construction
+These checks do not contact Discord or verify delivery of pending events.
 
-`live_run.py` runs **one** consumer pass and exits — run, observe, stop. The
-webhook it reads is bound to one throwaway forum, so it cannot reach a
-production channel even by mistake. Pointing the plugin at production is a
-configuration act by the operator, not something any script here does.
+## Local sandbox
+
+Use `scripts/sandbox` for local Hermes commands rather than invoking `hermes`
+against an inherited home. Its integration commands set `HERMES_HOME` and
+`HERMES_KANBAN_HOME` to the repository's ignored `.sandbox/` directory.
+
+`sandbox up` initializes the local board. `sandbox task` creates a task and
+walks it through comment, blocked, unblocked and completed states without an
+LLM or worker. `sandbox consume` prints transport operations and stores its
+cursor and post mappings locally. Running it again without new events should
+produce no new publication operations.
+
+The offline consumer uses `.sandbox/plugin-state.db`. The live check uses
+`.sandbox/live-state.db`, keeping their delivery state separate. Sandbox reset
+uses the system trash when available and refuses homes that appear to contain
+non-sandbox data.
+
+## Fixtures and test doubles
+
+- `FakeHttp` in `tests/conftest.py` records requests and returns canned HTTP
+  responses. It exercises transport payloads, headers and error handling.
+- `FakeTransport` records publication operations and supplies controlled
+  failures and thread metadata for consumer tests.
+- `make_board` creates a real SQLite database with the tables the consumer
+  reads. State and cursor tests execute SQL rather than mocking it.
+- `ConsoleTransport` in `scripts/consume_sandbox.py` prints publication
+  operations instead of sending them to Discord.
+
+Contract tests also protect mention suppression, message identity, avatar
+asset coverage, manifest/hook agreement, callback signatures and unload
+behavior. Prefer assertions on observable behavior and keep external I/O
+behind these boundaries.
+
+## Live checks
+
+Live checks require explicit authorization and a dedicated test forum. Verify
+the configured webhook's destination before running them: the credentials
+determine where requests go.
+
+`live_run.py` reads test credentials from `.env.local`, consumes the supplied
+sandbox board using its separate state database, runs one pass and exits. It
+can create posts, edit cards and send replies. Do not include it in routine
+offline validation or run it against production boards or cursors.

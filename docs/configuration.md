@@ -92,6 +92,22 @@ thread keeps running and rebuilds its registered profile scope on the next
 interval — never as "unconfigured". A kick can accelerate that attempt but
 cannot redirect it to another profile.
 
+For the process home, refresh uses Hermes' `launch_secret_scope` when available,
+preserving its trusted launch-environment snapshot. Older Hermes versions without
+`tui_gateway.launch_profile_policy` use `build_profile_secret_scope` instead,
+as routed profiles already do. Hermes' `get_secret` retains environment-only
+credentials in single-profile mode and fails closed on scope misses when
+multiplexing is active. The plugin never copies ambient credentials or changes
+the multiplexing flag. A broken dependency inside an available launch policy is
+still an error; it is not treated as an absent optional API.
+
+The `>=0.20` requirement is retained: the official
+[Hermes 0.20.0 source](https://github.com/NousResearch/hermes-agent/tree/3c27eb6234bf91b8ceee9e9071591b31e9b148cb)
+already exposes the profile builder, hydration and home-override APIs used by
+this path. CI pins that baseline and Hermes 0.21.3 and exercises deferred startup
+as well as registration. Source inspection is not a claim of full runtime or
+Discord compatibility for every intervening version.
+
 ## Startup classification: transient vs config verdict
 
 The build runs once per attempt and ends in one of three ways:

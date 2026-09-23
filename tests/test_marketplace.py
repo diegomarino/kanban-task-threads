@@ -101,14 +101,19 @@ def test_ci_pins_tools_and_runs_catalog_gates():
     assert re.search(r"\bpytest==\d+\.\d+\.\d+\b", workflow)
     assert re.search(r"\bruff==\d+\.\d+\.\d+\b", workflow)
     assert "repository: NousResearch/hermes-agent" in workflow
-    assert re.search(r"\n\s+ref:\s*[0-9a-f]{40}\b", workflow), (
-        "Hermes source must be pinned to a full commit SHA"
+    assert "ref: ${{ matrix.hermes-ref }}" in workflow
+    hermes_matrix = re.search(r"hermes-ref:\n((?:[ \t]+- [^\n]+\n)+)", workflow)
+    assert hermes_matrix, "Hermes compatibility matrix is missing"
+    refs = re.findall(r"^[ \t]+- ([^\s#]+)", hermes_matrix[1], re.MULTILINE)
+    assert refs and all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in refs), (
+        "Every Hermes source must be pinned to a full commit SHA"
     )
     assert "path: hermes-agent" in workflow
     assert "python -m pip install -e hermes-agent" in workflow, (
         "Hermes explicitly refuses non-editable package builds"
     )
     assert "hermes plugins validate plugin --json" in workflow
+    assert "python plugin/scripts/check_startup.py" in workflow
     assert "hashgraph-online/ai-plugin-scanner-action@" in workflow
     assert "min_score: 80" in workflow
     assert "format: sarif" in workflow
