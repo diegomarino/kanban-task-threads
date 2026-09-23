@@ -1,6 +1,7 @@
 """The entry point contract: register() starts only a deferred runtime thread,
 every callback accepts **kwargs, unload tears down, and the manifest matches."""
 
+import builtins
 import contextvars
 import importlib
 import importlib.util
@@ -10,6 +11,8 @@ import sys
 import threading
 import time
 import types
+
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -96,7 +99,10 @@ def test_profile_context_refresh_rebuilds_the_captured_profiles_secret_scope(mon
     assert hydrated == [tmp_path / "profile", tmp_path / "profile"]
 
 
-def test_profile_refresh_pins_home_but_keeps_the_latest_attempt_context(monkeypatch, tmp_path):
+@pytest.mark.parametrize("launch_policy_available", [False, True, None])
+def test_profile_refresh_pins_home_but_keeps_the_latest_attempt_context(
+    monkeypatch, tmp_path, launch_policy_available
+):
     module = load_entry_point()
     active_home = contextvars.ContextVar("active_home", default=tmp_path / "process")
     request_marker = contextvars.ContextVar("request_marker", default="missing")
@@ -124,6 +130,7 @@ def test_profile_refresh_pins_home_but_keeps_the_latest_attempt_context(monkeypa
     launch_policy.launch_secret_scope = lambda home: {
         "home": str(home),
         "marker": request_marker.get(),
+        "launch_only": "frozen-launch-value",
     }
     tui_gateway = types.ModuleType("tui_gateway")
     tui_gateway.launch_profile_policy = launch_policy
@@ -135,9 +142,14 @@ def test_profile_refresh_pins_home_but_keeps_the_latest_attempt_context(monkeypa
         ("hermes_cli", hermes_cli),
         ("hermes_cli.env_loader", env_loader),
         ("tui_gateway", tui_gateway),
-        ("tui_gateway.launch_profile_policy", launch_policy),
+        ("tui_gateway.launch_profile_policy", launch_policy if launch_policy_available else None),
     ):
         monkeypatch.setitem(sys.modules, name, fake)
+
+    if launch_policy_available is None:
+        # Some older distributions do not include the parent package either.
+        monkeypatch.setitem(sys.modules, "tui_gateway", None)
+        monkeypatch.delitem(sys.modules, "tui_gateway.launch_profile_policy")
 
     active_home.set(tmp_path / "registered-profile")
     registered = contextvars.copy_context()
@@ -161,7 +173,30 @@ def test_profile_refresh_pins_home_but_keeps_the_latest_attempt_context(monkeypa
 
     assert refreshed.run(active_home.get) == tmp_path / "process"
     assert refreshed.run(request_marker.get) == "later-kick"
-    assert observed == [{"home": str(tmp_path / "process"), "marker": "later-kick"}]
+    expected = {"home": str(tmp_path / "process"), "marker": "later-kick"}
+    if launch_policy_available:
+        expected["launch_only"] = "frozen-launch-value"
+    assert observed == [expected]
+
+    if launch_policy_available:
+        real_import = builtins.__import__
+
+        def broken_dependency(name, *args, **kwargs):
+            if name == "tui_gateway.launch_profile_policy":
+                raise ModuleNotFoundError("broken transitive dependency", name="policy_dependency")
+            return real_import(name, *args, **kwargs)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(builtins, "__import__", broken_dependency)
+            with pytest.raises(ModuleNotFoundError, match="broken transitive dependency"):
+                module._refresh_profile_context(contextvars.Context())
+
+        def broken_policy(home):
+            raise ModuleNotFoundError("policy execution failed", name="tui_gateway")
+
+        monkeypatch.setattr(launch_policy, "launch_secret_scope", broken_policy)
+        with pytest.raises(ModuleNotFoundError, match="policy execution failed"):
+            module._refresh_profile_context(contextvars.Context())
 
 
 def test_register_registers_hooks_and_unload():

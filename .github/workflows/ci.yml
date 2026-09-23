@@ -65,9 +65,15 @@ jobs:
       - name: Unit tests
         run: python -m pytest tests/
 
-  hermes-validate:
-    name: Hermes plugin validation
+  hermes-compatibility:
+    name: Hermes runtime compatibility
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        hermes-ref:
+          - 3c27eb6234bf91b8ceee9e9071591b31e9b148cb # v2026.8.3 / Hermes 0.20.0
+          - 345cd2b057a452236de401d3534b8502a7465e8d # v2026.9.14 / Hermes 0.21.3
     steps:
       - name: Check out plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -77,7 +83,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: NousResearch/hermes-agent
-          ref: 345cd2b057a452236de401d3534b8502a7465e8d
+          ref: ${{ matrix.hermes-ref }}
           path: hermes-agent
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -86,13 +92,29 @@ jobs:
           check-latest: false
       - name: Install pinned Hermes
         run: python -m pip install -e hermes-agent
+      - name: Check deferred startup with real Hermes APIs
+        run: python plugin/scripts/check_startup.py
       - name: Validate plugin contract
+        # Hermes 0.20.0 predates this CLI command; startup is checked above on both pins.
+        if: matrix.hermes-ref == '345cd2b057a452236de401d3534b8502a7465e8d'
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-home
           HERMES_KANBAN_HOME: ${{ runner.temp }}/hermes-home
           OP_LOAD_DESKTOP_APP_SETTINGS: "false"
           OP_BIOMETRIC_UNLOCK_ENABLED: "false"
         run: hermes plugins validate plugin --json
+
+  hermes-validate:
+    name: Hermes plugin validation
+    needs: hermes-compatibility
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every Hermes compatibility check to pass
+        env:
+          COMPATIBILITY_RESULT: ${{ needs.hermes-compatibility.result }}
+        run: |
+          test "$COMPATIBILITY_RESULT" = success
 
   plugin-scanner:
     name: HOL plugin scanner

@@ -101,14 +101,19 @@ def test_ci_pins_tools_and_runs_catalog_gates():
     assert re.search(r"\bpytest==\d+\.\d+\.\d+\b", workflow)
     assert re.search(r"\bruff==\d+\.\d+\.\d+\b", workflow)
     assert "repository: NousResearch/hermes-agent" in workflow
-    assert re.search(r"\n\s+ref:\s*[0-9a-f]{40}\b", workflow), (
-        "Hermes source must be pinned to a full commit SHA"
+    assert "ref: ${{ matrix.hermes-ref }}" in workflow
+    hermes_matrix = re.search(r"hermes-ref:\n((?:[ \t]+- [^\n]+\n)+)", workflow)
+    assert hermes_matrix, "Hermes compatibility matrix is missing"
+    refs = re.findall(r"^[ \t]+- ([^\s#]+)", hermes_matrix[1], re.MULTILINE)
+    assert refs and all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in refs), (
+        "Every Hermes source must be pinned to a full commit SHA"
     )
     assert "path: hermes-agent" in workflow
     assert "python -m pip install -e hermes-agent" in workflow, (
         "Hermes explicitly refuses non-editable package builds"
     )
     assert "hermes plugins validate plugin --json" in workflow
+    assert "python plugin/scripts/check_startup.py" in workflow
     assert "hashgraph-online/ai-plugin-scanner-action@" in workflow
     assert "min_score: 80" in workflow
     assert "format: sarif" in workflow
@@ -120,6 +125,28 @@ def test_ci_pins_tools_and_runs_catalog_gates():
         if not re.fullmatch(r"[0-9a-f]{40}", ref):
             unpinned[name] = ref
     assert not unpinned, f"GitHub actions must be pinned to full commit SHAs: {unpinned}"
+
+
+def test_required_hermes_check_has_a_stable_name_and_fails_closed():
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    gate = re.search(r"^  hermes-validate:\n(.*?)(?=^  \S|\Z)", workflow, re.MULTILINE | re.DOTALL)
+    assert gate, "Required Hermes check is missing"
+    body = gate[1]
+    assert "name: Hermes plugin validation\n" in body
+    assert "strategy:" not in body, "A matrix changes the required check's name"
+    assert "needs: hermes-compatibility" in body
+    assert "if: ${{ always() }}" in body, "Failed dependencies must still report the gate"
+    script = re.search(r"run: \|\n((?:        [^\n]*\n)+)", body)
+    assert script, "Required check must verify the matrix result"
+    command = "\n".join(line[8:] for line in script[1].splitlines())
+    for result in ("success", "failure", "cancelled", "skipped", ""):
+        completed = subprocess.run(
+            ["bash", "-c", command],
+            env={"COMPATIBILITY_RESULT": result},
+            capture_output=True,
+            text=True,
+        )
+        assert (completed.returncode == 0) == (result == "success"), result
 
 
 def test_ci_uploads_sarif_even_when_the_scanner_gate_fails():
