@@ -5,6 +5,13 @@ Format: [Keep a Changelog](https://keepachangelog.com); versioning: semver,
 SQLite schema) always describe the migration in their notes — columns are
 added in place, idempotently; deployed state files are never recreated.
 
+## [0.4.1](https://github.com/diegomarino/kanban-task-threads/compare/v0.4.0...v0.4.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **runtime:** support Hermes without launch profile policy ([#12](https://github.com/diegomarino/kanban-task-threads/issues/12)) ([d779afb](https://github.com/diegomarino/kanban-task-threads/commit/d779afb86e4f493ba0564ad1af00fd02f0f58b18))
+
 ## [0.4.0](https://github.com/diegomarino/kanban-task-threads/compare/v0.3.0...v0.4.0) (2026-09-22)
 
 
