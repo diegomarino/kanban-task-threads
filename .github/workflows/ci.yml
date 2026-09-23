@@ -95,6 +95,8 @@ jobs:
       - name: Check deferred startup with real Hermes APIs
         run: python plugin/scripts/check_startup.py
       - name: Validate plugin contract
+        # Hermes 0.20.0 predates this CLI command; startup is checked above on both pins.
+        if: matrix.hermes-ref == '345cd2b057a452236de401d3534b8502a7465e8d'
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-home
           HERMES_KANBAN_HOME: ${{ runner.temp }}/hermes-home

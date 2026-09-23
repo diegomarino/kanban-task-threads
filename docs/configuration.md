@@ -104,8 +104,9 @@ still an error; it is not treated as an absent optional API.
 The `>=0.20` requirement is retained: the official
 [Hermes 0.20.0 source](https://github.com/NousResearch/hermes-agent/tree/3c27eb6234bf91b8ceee9e9071591b31e9b148cb)
 already exposes the profile builder, hydration and home-override APIs used by
-this path. CI pins that baseline and Hermes 0.21.3 and exercises deferred startup
-as well as registration. Source inspection is not a claim of full runtime or
+this path. CI exercises deferred startup on that baseline and Hermes 0.21.3;
+the latter also provides the registration-validation CLI command. Source
+inspection is not a claim of full runtime or
 Discord compatibility for every intervening version.
 
 ## Startup classification: transient vs config verdict

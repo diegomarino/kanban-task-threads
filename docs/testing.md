@@ -47,8 +47,9 @@ The checks cover:
 Lifecycle checks use an in-memory consumer observer. API-specific checks report
 a skip when the selected Hermes installation does not provide that API; the
 unit suite also covers optional-module presence, absence and internal errors.
-CI runs the startup check alongside registration validation against pinned
-Hermes versions.
+CI runs the startup check against every pinned Hermes version. It also runs
+registration validation on the pin that provides `plugins validate`; older
+Hermes releases may not expose that CLI command.
 
 These checks do not contact Discord or verify delivery of pending events.
 
