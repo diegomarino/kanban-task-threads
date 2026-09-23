@@ -127,6 +127,28 @@ def test_ci_pins_tools_and_runs_catalog_gates():
     assert not unpinned, f"GitHub actions must be pinned to full commit SHAs: {unpinned}"
 
 
+def test_required_hermes_check_has_a_stable_name_and_fails_closed():
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    gate = re.search(r"^  hermes-validate:\n(.*?)(?=^  \S|\Z)", workflow, re.MULTILINE | re.DOTALL)
+    assert gate, "Required Hermes check is missing"
+    body = gate[1]
+    assert "name: Hermes plugin validation\n" in body
+    assert "strategy:" not in body, "A matrix changes the required check's name"
+    assert "needs: hermes-compatibility" in body
+    assert "if: ${{ always() }}" in body, "Failed dependencies must still report the gate"
+    script = re.search(r"run: \|\n((?:        [^\n]*\n)+)", body)
+    assert script, "Required check must verify the matrix result"
+    command = "\n".join(line[8:] for line in script[1].splitlines())
+    for result in ("success", "failure", "cancelled", "skipped", ""):
+        completed = subprocess.run(
+            ["bash", "-c", command],
+            env={"COMPATIBILITY_RESULT": result},
+            capture_output=True,
+            text=True,
+        )
+        assert (completed.returncode == 0) == (result == "success"), result
+
+
 def test_ci_uploads_sarif_even_when_the_scanner_gate_fails():
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
     assert "output: plugin-scanner.sarif" in workflow

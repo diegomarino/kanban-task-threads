@@ -65,8 +65,8 @@ jobs:
       - name: Unit tests
         run: python -m pytest tests/
 
-  hermes-validate:
-    name: Hermes plugin validation
+  hermes-compatibility:
+    name: Hermes runtime compatibility
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -103,6 +103,18 @@ jobs:
           OP_LOAD_DESKTOP_APP_SETTINGS: "false"
           OP_BIOMETRIC_UNLOCK_ENABLED: "false"
         run: hermes plugins validate plugin --json
+
+  hermes-validate:
+    name: Hermes plugin validation
+    needs: hermes-compatibility
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every Hermes compatibility check to pass
+        env:
+          COMPATIBILITY_RESULT: ${{ needs.hermes-compatibility.result }}
+        run: |
+          test "$COMPATIBILITY_RESULT" = success
 
   plugin-scanner:
     name: HOL plugin scanner
