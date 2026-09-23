@@ -68,9 +68,18 @@ def _refresh_profile_context(base_context, *, identity_context=None):
         home = Path(get_hermes_home())
         hydrate_profile_secret_sources(home)
         if home.resolve() == Path(get_process_hermes_home()).resolve():
-            from tui_gateway.launch_profile_policy import launch_secret_scope
-
-            secrets = launch_secret_scope(home)
+            try:
+                from tui_gateway.launch_profile_policy import launch_secret_scope
+            except ModuleNotFoundError as exc:
+                if exc.name not in {"tui_gateway", "tui_gateway.launch_profile_policy"}:
+                    raise
+                # Older Hermes uses a profile-file overlay. Its get_secret()
+                # owns env-only launch credentials in single-profile mode and
+                # fails closed under multiplexing. Never copy ambient secrets
+                # here: only newer Hermes can supply a trusted launch snapshot.
+                secrets = secret_scope.build_profile_secret_scope(home)
+            else:
+                secrets = launch_secret_scope(home)
         else:
             secrets = secret_scope.build_profile_secret_scope(home)
         secret_scope.set_secret_scope(secrets)
