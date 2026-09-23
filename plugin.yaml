@@ -1,5 +1,5 @@
 name: kanban-task-threads
-version: 0.4.0
+version: 0.4.1
 description: >-
   Every kanban task gets a forum thread of its own: the first post is a live
   status card rewritten in place, the replies are the append-only log. Discord
