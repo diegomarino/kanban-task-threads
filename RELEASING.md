@@ -16,7 +16,9 @@ public tree. It does not select, copy, or reconcile internal source commits.
    `python3 scripts/check.py full-local` against that exact public candidate,
    then run every publication gate below and
    merge its technical PR into `pre-release`. Pushes to `pre-release` run the
-   same CI gates as `main`, but cannot run Release Please or publish a tag.
+   single expensive **Release candidate** gate, but cannot run Release Please
+   or publish a tag. Later stages reuse only that exact successful candidate
+   SHA and fail closed when the identity cannot be proven.
 4. After every validation job passes on a `pre-release` push, CI opens or
    reuses one promotion PR from `pre-release` to `main`. Merge it with **Create
    a merge commit** so `pre-release` remains an ancestor of `main`; do not

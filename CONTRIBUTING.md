@@ -25,6 +25,13 @@ change the supported version floor or authorize a release. Live Discord
 evidence proves delivery to an explicitly authorized test forum and is never a
 routine contributor check.
 
+To probe an upstream Hermes change, manually run **Release candidate** with
+`hermes_ref` set to either a commit SHA (for example, `0123...`) or
+`refs/pull/123/head`. Find the resulting **Upstream Hermes probe** check in
+the dispatched workflow. A skipped plugin validation means that older Hermes
+lacks `plugins validate`; the startup check still ran. This probe never
+promotes a branch, invokes Release Please, or publishes anything.
+
 See [testing details](docs/testing.md). Maintainers should use
 [the release guide](RELEASING.md) for publication and its separate procedures
 for credentials, branch protection, catalog setup, and live Discord helpers.
