@@ -333,6 +333,11 @@ def test_catalog_pr_is_a_manual_main_only_workflow_with_a_scoped_credential():
     assert catalog_job.count("persist-credentials: false") == 2
     assert "gh auth setup-git" in catalog_job
     assert "scripts/update_hermes_catalog.py" in workflow
+    assert "scripts/ci/catalog_handoff.py" in workflow
+    assert "--open-prs-file" in workflow
+    assert "--branch-prs-file" in workflow
+    assert "--remote-branch-file" in workflow
+    assert "--upstream-catalog-file" in workflow
     assert "python -m pip install pyyaml==6.0.2" in workflow
     assert "scripts/validate_plugin_catalog.py plugin-catalog/" in workflow
     assert "catalog/kanban-task-threads-v${RELEASE_VERSION}" in workflow
@@ -340,7 +345,7 @@ def test_catalog_pr_is_a_manual_main_only_workflow_with_a_scoped_credential():
     assert "--paginate --slurp" in workflow
     assert ".head.repo.full_name == $repo" in workflow
     assert ".head.ref | startswith($prefix)" in workflow
-    assert '"${OPEN_PLUGIN_PR_REF}" != "${CATALOG_BRANCH}"' in workflow
+    assert '--expected-branch "${CATALOG_BRANCH}"' in workflow
     assert 'git ls-remote --heads origin "refs/heads/${CATALOG_BRANCH}"' in workflow
     assert "gh pr list" not in workflow
     assert workflow.count("repos/${UPSTREAM_REPOSITORY}/pulls") == 3
@@ -348,10 +353,11 @@ def test_catalog_pr_is_a_manual_main_only_workflow_with_a_scoped_credential():
     assert workflow.count("-f state=all") == 2
     assert ".state | ascii_upcase" in workflow
     assert 'if .merged_at then "MERGED"' in workflow
-    assert '"${PR_STATE}" = "CLOSED"' in workflow
-    assert '"${PR_STATE}" = "MERGED"' in workflow
+    assert 'case "${ACTION}" in' in workflow
+    assert "already-merged)" in workflow
     assert 'git diff --name-only "${UPSTREAM_SHA}" "${REMOTE_SHA}"' in workflow
     assert '--force-with-lease="refs/heads/${CATALOG_BRANCH}:"' in workflow
+    assert "it will not retry an ambiguous push" in workflow
     assert "--draft" in workflow
     assert re.search(
         r"(?m)^      - name: Open the upstream catalog PR\n"

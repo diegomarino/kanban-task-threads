@@ -27,6 +27,11 @@ The unit and lint commands provision the tool versions pinned by the project.
 CI runs the Python version matrix, Hermes compatibility checks and public plugin
 scanner. Local checks do not establish that CI or live delivery has passed.
 
+Catalog publication remains a manual, protected-environment workflow. Its
+handoff state is covered offline by `./scripts/sandbox test tests/test_catalog_handoff.py -q`,
+including local bare-repository `--force-with-lease` rehearsals. These tests do
+not contact GitHub and do not establish fork token scope or catalog admission.
+
 ## Registration and deferred startup
 
 Registration and startup are distinct contracts. `register()` installs hooks,
