@@ -413,6 +413,23 @@ def test_missing_task_clears_dirty_card_without_transport_call(board, parts):
     assert store.get_post("default", "t_1")["card_dirty"] == 0
 
 
+def test_lease_loss_before_dirty_repaint_skips_edit_and_keeps_card_dirty(board, parts):
+    store, transport, consumer = parts
+    insert_task(board, "t_1", status="running")
+    store.begin_create("default", "t_1", now=NOW)
+    store.complete_create(
+        "default", "t_1", thread_id="th1", message_id="msg1", destination="discord:test"
+    )
+    store.set_card_dirty("default", "t_1", True)
+    store.renew_lease = lambda *args, **kwargs: False
+
+    report = consumer.run_once(now=NOW)
+
+    assert transport.ops("edit_card") == []
+    assert store.get_post("default", "t_1")["card_dirty"] == 1
+    assert "lease lost mid-pass; aborting before the next repaint" in report.warnings
+
+
 def test_losing_the_lease_mid_pass_aborts_before_the_next_task(board, parts):
     # Fencing: the lease is renewed per task; a holder that lost it must stop
     # publishing immediately instead of racing the new holder.

@@ -290,6 +290,27 @@ def test_audit_rechecks_the_fenced_lease_before_each_tasks_patches(board, tmp_pa
     assert any("lease lost during Discord metadata audit" in item for item in report.warnings)
 
 
+def test_lease_loss_before_metadata_audit_skips_every_bot_transport_call(board, tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    transport = FakeTransport(BOT_CAPS)
+    consumer = Consumer(
+        tmp_path / "kanban.db",
+        store,
+        transport,
+        board="default",
+        holder="bot",
+        guild_id="guild-9",
+    )
+    consumer._forum_prepared = True
+    consumer._next_metadata_audit_at = NOW
+    store.renew_lease = lambda *args, **kwargs: False
+
+    report = consumer.run_once(now=NOW)
+
+    assert transport.calls == []
+    assert "lease lost before Discord metadata audit" in report.warnings
+
+
 def test_audit_skips_posts_frozen_to_another_webhook_in_the_same_forum(board, tmp_path):
     store = StateStore(tmp_path / "state.db")
     transport = FakeTransport(BOT_CAPS)
