@@ -33,6 +33,6 @@ jobs:
           test "$(git rev-parse HEAD)" = "${HEAD_SHA}"
           CURRENT_SHA="$(gh api "repos/${REPOSITORY}/git/ref/heads/pre-release" --jq '.object.sha')"
           test "${CURRENT_SHA}" = "${HEAD_SHA}"
-          gh api "repos/${REPOSITORY}/actions/workflows/candidate.yml/runs?head_sha=${HEAD_SHA}&status=completed&per_page=100" --paginate --slurp | jq '[.[] | .workflow_runs[] | select(.name == "Release candidate") | {headSha: .head_sha, conclusion: .conclusion}]' > candidate-runs.json
+          gh api "repos/${REPOSITORY}/actions/workflows/candidate.yml/runs?head_sha=${HEAD_SHA}&event=push&status=completed&per_page=100" --paginate --slurp | jq '[.[] | .workflow_runs[] | select(.event == "push" and .name == "Release candidate") | {headSha: .head_sha, conclusion: .conclusion}]' > candidate-runs.json
           python3 scripts/ci/verify_candidate.py --runs-file candidate-runs.json --sha "${HEAD_SHA}"
           git cat-file -e "${HEAD_SHA}:.github/workflows/candidate.yml"

@@ -189,6 +189,13 @@ def test_candidate_gate_has_only_the_planned_expensive_jobs():
     assert "needs: [quality, hermes-validate, plugin-scanner]" in workflow
 
 
+def test_manual_probe_has_an_event_isolated_concurrency_lane():
+    workflow = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
+
+    assert "group: release-candidate-${{ github.event_name }}-${{ github.ref }}" in workflow
+    assert "cancel-in-progress: true" in workflow
+
+
 def test_promotion_identity_does_not_repeat_expensive_candidate_work():
     workflow = (ROOT / ".github" / "workflows" / "promotion-identity.yml").read_text()
     assert "python -m pytest" not in workflow

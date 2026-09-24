@@ -255,8 +255,9 @@ def test_promotion_identity_fails_closed_on_wrong_origin_or_candidate_data():
     assert "head.ref == 'pre-release'" in identity
     assert "git/ref/heads/pre-release" in identity
     assert 'test "${CURRENT_SHA}" = "${HEAD_SHA}"' in identity
-    assert "actions/workflows/candidate.yml/runs?head_sha=${HEAD_SHA}" in identity
+    assert "actions/workflows/candidate.yml/runs?head_sha=${HEAD_SHA}&event=push" in identity
     assert ".workflow_runs[]" in identity
+    assert '.event == "push"' in identity
     assert "verify_candidate.py --runs-file candidate-runs.json --sha" in identity
     assert 'git cat-file -e "${HEAD_SHA}:.github/workflows/candidate.yml"' in identity
 

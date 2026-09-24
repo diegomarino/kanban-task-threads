@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-candidate-${{ github.ref }}
+  group: release-candidate-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
