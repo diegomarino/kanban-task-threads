@@ -195,6 +195,13 @@ jobs:
               ;;
             already-merged)
               echo "Catalog PR already merged."
+              git switch --detach "${UPSTREAM_SHA}"
+              python ../plugin/scripts/update_hermes_catalog.py \
+                plugin-catalog/kanban-task-threads.yaml \
+                "${RELEASE_VERSION}" \
+                "${RELEASE_SHA}"
+              git diff --exit-code -- plugin-catalog/kanban-task-threads.yaml
+              python scripts/validate_plugin_catalog.py plugin-catalog/
               echo "complete=true" >> "${GITHUB_OUTPUT}"
               ;;
             *)

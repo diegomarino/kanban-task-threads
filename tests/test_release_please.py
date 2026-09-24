@@ -311,6 +311,8 @@ def test_promotion_identity_fails_closed_on_wrong_origin_or_candidate_data():
     assert "git/ref/heads/pre-release" in identity
     assert 'test "${CURRENT_SHA}" = "${HEAD_SHA}"' in identity
     assert "actions/workflows/candidate.yml/runs?head_sha=${HEAD_SHA}&event=push" in identity
+    assert "Wait for the exact candidate run" in identity
+    assert "gh run watch" in identity
     assert ".workflow_runs[]" in identity
     assert '.event == "push"' in identity
     assert "verify_candidate.py --runs-file candidate-runs.json --sha" in identity
@@ -360,6 +362,10 @@ def test_catalog_pr_is_a_manual_main_only_workflow_with_a_scoped_credential():
     assert 'if .merged_at then "MERGED"' in workflow
     assert 'case "${ACTION}" in' in workflow
     assert "already-merged)" in workflow
+    already_merged = workflow.split("already-merged)", 1)[1].split(";;", 1)[0]
+    assert "scripts/update_hermes_catalog.py" in already_merged
+    assert "git diff --exit-code" in already_merged
+    assert "scripts/validate_plugin_catalog.py plugin-catalog/" in already_merged
     assert 'git diff --name-only "${UPSTREAM_SHA}" "${REMOTE_SHA}"' in workflow
     assert '--force-with-lease="refs/heads/${CATALOG_BRANCH}:"' in workflow
     assert "it will not retry an ambiguous push" in workflow
