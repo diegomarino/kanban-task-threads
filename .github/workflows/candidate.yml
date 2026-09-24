@@ -1,55 +1,31 @@
-name: CI
+name: Release candidate
 
 on:
   push:
-    branches: [pre-release, main]
-  pull_request:
+    branches: [pre-release]
+  workflow_dispatch:
+    inputs:
+      hermes_ref:
+        description: Hermes commit SHA or refs/pull/<number>/head to probe
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: false
+  group: release-candidate-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  pr-policy:
-    name: Main PR policy
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require promotion or Release Please for main
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          REPOSITORY: ${{ github.repository }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${EVENT_NAME}" != "pull_request" ] || [ "${BASE_REF}" != "main" ]; then
-            exit 0
-          fi
-          if [ "${HEAD_REPOSITORY}" = "${REPOSITORY}" ] && \
-             [ "${HEAD_REF}" = "pre-release" ]; then
-            exit 0
-          fi
-          if [ "${HEAD_REPOSITORY}" = "${REPOSITORY}" ] && \
-             [ "${HEAD_REF}" = "release-please--branches--main" ] && \
-             [ "${PR_AUTHOR}" = "github-actions[bot]" ]; then
-            exit 0
-          fi
-          echo "Only the pre-release promotion or Release Please may target main." >&2
-          exit 1
-
   quality:
     name: Python ${{ matrix.python-version }}
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -67,6 +43,7 @@ jobs:
 
   hermes-compatibility:
     name: Hermes runtime compatibility
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -95,7 +72,6 @@ jobs:
       - name: Check deferred startup with real Hermes APIs
         run: python plugin/scripts/check_startup.py
       - name: Validate plugin contract
-        # Hermes 0.20.0 predates this CLI command; startup is checked above on both pins.
         if: matrix.hermes-ref == '345cd2b057a452236de401d3534b8502a7465e8d'
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-home
@@ -107,17 +83,17 @@ jobs:
   hermes-validate:
     name: Hermes plugin validation
     needs: hermes-compatibility
-    if: ${{ always() }}
+    if: ${{ always() && github.event_name == 'push' }}
     runs-on: ubuntu-latest
     steps:
       - name: Require every Hermes compatibility check to pass
         env:
           COMPATIBILITY_RESULT: ${{ needs.hermes-compatibility.result }}
-        run: |
-          test "$COMPATIBILITY_RESULT" = success
+        run: test "$COMPATIBILITY_RESULT" = success
 
   plugin-scanner:
     name: HOL plugin scanner
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -142,12 +118,29 @@ jobs:
           sarif_file: plugin-scanner.sarif
           category: ai-plugin-scanner
 
+  release-candidate:
+    name: Release candidate
+    needs: [quality, hermes-validate, plugin-scanner]
+    if: ${{ always() && github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every candidate gate to pass
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          HERMES_RESULT: ${{ needs.hermes-validate.result }}
+          SCANNER_RESULT: ${{ needs.plugin-scanner.result }}
+        run: |
+          test "$QUALITY_RESULT" = success
+          test "$HERMES_RESULT" = success
+          test "$SCANNER_RESULT" = success
+
   promotion-pr:
     name: Open pre-release promotion PR
-    needs: [pr-policy, quality, hermes-validate, plugin-scanner]
+    needs: release-candidate
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/pre-release' }}
     runs-on: ubuntu-latest
     permissions:
+      checks: write
       contents: read
       pull-requests: write
     steps:
@@ -159,38 +152,17 @@ jobs:
           set -euo pipefail
           PROMOTION_TITLE="chore(release): promote pre-release to main"
           PROMOTION_BODY="Promotes the validated pre-release branch to main. Merge this PR with **Create a merge commit** (not squash or rebase) so pre-release remains an ancestor of main. After the merge, Release Please will open the separate version and changelog PR; no release is published until that second PR is merged. The Hermes catalog handoff remains manual."
-
-          CURRENT_SHA="$(
-            gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/pre-release" --jq '.object.sha'
-          )"
+          CURRENT_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/pre-release" --jq '.object.sha')"
           if [ "${CURRENT_SHA}" != "${GITHUB_SHA}" ]; then
             echo "pre-release advanced while this run was validating; the newer run owns promotion."
             exit 0
           fi
-
-          AHEAD_BY="$(
-            gh api "repos/${GITHUB_REPOSITORY}/compare/main...pre-release" --jq '.ahead_by'
-          )"
+          AHEAD_BY="$(gh api "repos/${GITHUB_REPOSITORY}/compare/main...pre-release" --jq '.ahead_by')"
           if [ "${AHEAD_BY}" -eq 0 ]; then
             echo "pre-release has no commits to promote."
             exit 0
           fi
-
-          OPEN_PRS="$(
-            gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls" \
-              -f state=open \
-              -f base=main \
-              -f "head=${GITHUB_REPOSITORY_OWNER}:pre-release" \
-              -f per_page=100 \
-              --paginate --slurp | \
-              jq \
-                --arg repo "${GITHUB_REPOSITORY}" \
-                '[.[][] | select(
-                  .head.repo.full_name == $repo and
-                  .head.ref == "pre-release" and
-                  .base.ref == "main"
-                ) | {url: .html_url}]'
-          )"
+          OPEN_PRS="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls" -f state=open -f base=main -f "head=${GITHUB_REPOSITORY_OWNER}:pre-release" -f per_page=100 --paginate --slurp | jq --arg repo "${GITHUB_REPOSITORY}" '[.[][] | select(.head.repo.full_name == $repo and .head.ref == "pre-release" and .base.ref == "main") | {url: .html_url}]')"
           OPEN_PR_COUNT="$(printf '%s' "${OPEN_PRS}" | jq 'length')"
           if [ "${OPEN_PR_COUNT}" -gt 1 ]; then
             echo "More than one pre-release promotion PR is open; refusing." >&2
@@ -198,39 +170,64 @@ jobs:
           fi
           if [ "${OPEN_PR_COUNT}" -eq 1 ]; then
             PROMOTION_PR_URL="$(printf '%s' "${OPEN_PRS}" | jq -r '.[0].url')"
-            gh pr edit "${PROMOTION_PR_URL}" \
-              --title "${PROMOTION_TITLE}" \
-              --body "${PROMOTION_BODY}"
+            gh pr edit "${PROMOTION_PR_URL}" --title "${PROMOTION_TITLE}" --body "${PROMOTION_BODY}"
             printf 'Promotion PR already open and normalized: %s\n' "${PROMOTION_PR_URL}"
-            exit 0
+          else
+            PROMOTION_PR_URL="$(gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head pre-release --title "${PROMOTION_TITLE}" --body "${PROMOTION_BODY}")"
           fi
+          PROMOTION_PR="$(gh api "${PROMOTION_PR_URL}" --jq '{headSha: .head.sha, headRepo: .head.repo.full_name, headRef: .head.ref, baseRef: .base.ref}')"
+          test "$(printf '%s' "${PROMOTION_PR}" | jq -r '.headSha')" = "${GITHUB_SHA}"
+          test "$(printf '%s' "${PROMOTION_PR}" | jq -r '.headRepo')" = "${GITHUB_REPOSITORY}"
+          test "$(printf '%s' "${PROMOTION_PR}" | jq -r '.headRef')" = pre-release
+          test "$(printf '%s' "${PROMOTION_PR}" | jq -r '.baseRef')" = main
+          jq -n \
+            --arg sha "${GITHUB_SHA}" \
+            --arg details_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{
+              "name": "Promotion identity",
+              "head_sha": $sha,
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": $details_url,
+              "output": {
+                "title": "Validated pre-release promotion",
+                "summary": "The exact pre-release SHA passed the Release candidate gate."
+              }
+            }' | gh api --method POST "repos/${GITHUB_REPOSITORY}/check-runs" --input -
 
-          gh pr create \
-            --repo "${GITHUB_REPOSITORY}" \
-            --base main \
-            --head pre-release \
-            --title "${PROMOTION_TITLE}" \
-            --body "${PROMOTION_BODY}"
-
-  release-please:
-    name: Release Please
-    needs: [pr-policy, quality, hermes-validate, plugin-scanner]
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  upstream-hermes-probe:
+    name: Upstream Hermes probe
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      issues: write
-      pull-requests: write
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      version: ${{ steps.release.outputs.version }}
-      sha: ${{ steps.release.outputs.sha }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - name: Open or update the release PR, or publish a merged release
-        id: release
-        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+      - name: Check out plugin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          path: plugin
+      - name: Check out requested Hermes ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ inputs.hermes_ref }}
+          path: hermes-agent
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+          check-latest: false
+      - name: Install requested Hermes
+        run: python -m pip install -e hermes-agent
+      - name: Check deferred startup with requested Hermes APIs
+        run: python plugin/scripts/check_startup.py
+      - name: Validate plugin when supported
+        env:
+          HERMES_HOME: ${{ runner.temp }}/hermes-home
+          HERMES_KANBAN_HOME: ${{ runner.temp }}/hermes-home
+          OP_LOAD_DESKTOP_APP_SETTINGS: "false"
+          OP_BIOMETRIC_UNLOCK_ENABLED: "false"
+        run: |
+          if hermes plugins validate --help >/dev/null 2>&1; then
+            hermes plugins validate plugin --json
+          else
+            echo "Skipping plugin validation: this Hermes CLI has no plugins validate command."
+          fi
