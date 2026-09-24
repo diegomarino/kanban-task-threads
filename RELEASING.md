@@ -12,7 +12,9 @@ public tree. It does not select, copy, or reconcile internal source commits.
    intended distributable changes. Resolve differences deliberately; do not
    merge the source history into the public history or accept one side of a
    conflict wholesale.
-3. Run every publication gate below against that exact public candidate and
+3. Run `python3 scripts/check.py fast` before pushing and
+   `python3 scripts/check.py full-local` against that exact public candidate,
+   then run every publication gate below and
    merge its technical PR into `pre-release`. Pushes to `pre-release` run the
    same CI gates as `main`, but cannot run Release Please or publish a tag.
 4. After every validation job passes on a `pre-release` push, CI opens or
@@ -112,12 +114,12 @@ resulting PR starts as a draft.
 
 ## Publication gates
 
-Run these without pointing Hermes at the live fleet:
+Run these without pointing Hermes at the live fleet. `full-local` is the
+canonical offline gate; GitHub repeats only external or platform-specific
+validation:
 
 ```bash
-./scripts/sandbox test
-./scripts/sandbox lint
-./scripts/sandbox doctor
+python3 scripts/check.py full-local
 HERMES_HOME="$PWD/.sandbox" \
   HERMES_KANBAN_HOME="$PWD/.sandbox" \
   hermes plugins validate . --json

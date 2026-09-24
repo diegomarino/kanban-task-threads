@@ -5,11 +5,18 @@ exercises the boundary being changed. Most checks run without agents,
 credentials or network access. Live Discord checks are a separate, explicit
 step.
 
+Before pushing, run `python3 scripts/check.py fast`. It runs the complete
+offline unit suite with branch coverage, Ruff, and actionlint. Run
+`python3 scripts/check.py full-local` for a publication candidate or an
+integration-surface change; it additionally loads the plugin through Hermes.
+GitHub repeats only external or platform-specific validation.
+
 ## Validation layers
 
 | Layer | Command | Requirements | Coverage |
 |---|---|---|---|
-| Unit | `./scripts/sandbox test` | uv | Rendering, transport payloads, SQLite state, leases, cursor handling, failure policy and runtime lifecycle |
+| Unit | `./scripts/sandbox test [path-or-pytest-args]` | uv | Focused pytest during development; rendering, transport payloads, SQLite state, leases, cursor handling, failure policy and runtime lifecycle |
+| Local gate | `python3 scripts/check.py fast` | uv, actionlint | Complete offline suite with branch coverage, Ruff, and workflow syntax |
 | Lint | `./scripts/sandbox lint` | uv | Ruff lint and formatting |
 | Runtime load | `./scripts/sandbox doctor` | Hermes | Registration through the real plugin loader, in a temporary home with sockets blocked |
 | Deferred startup | `path/to/hermes/python scripts/check_startup.py` | Hermes' Python interpreter | Profile scopes, hook-less startup, retry, unload and a local consumer pass |
