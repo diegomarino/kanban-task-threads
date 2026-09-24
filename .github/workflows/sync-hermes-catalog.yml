@@ -123,121 +123,99 @@ jobs:
           git fetch "https://github.com/${UPSTREAM_REPOSITORY}.git" main
           UPSTREAM_SHA="$(git rev-parse FETCH_HEAD)"
           REMOTE_SHA="$(git ls-remote --heads origin "refs/heads/${CATALOG_BRANCH}" | cut -f1)"
-          OPEN_PLUGIN_PRS="$(
-            gh api --method GET "repos/${UPSTREAM_REPOSITORY}/pulls" \
-              -f state=open \
-              -f per_page=100 \
-              --paginate --slurp | \
-              jq \
-                --arg repo "${FORK_REPOSITORY}" \
-                --arg prefix "catalog/kanban-task-threads-v" \
-                '[.[][] | select(
-                  .head.repo.full_name == $repo and
-                  (.head.ref | startswith($prefix))
-                ) | {ref: .head.ref, url: .html_url}]'
-          )"
-          OPEN_PLUGIN_PR_COUNT="$(printf '%s' "${OPEN_PLUGIN_PRS}" | jq 'length')"
-          if [ "${OPEN_PLUGIN_PR_COUNT}" -gt 1 ]; then
-            echo "More than one open catalog PR exists for this plugin; refusing." >&2
-            exit 1
+          HANDOFF_DATA="${RUNNER_TEMP}/catalog-handoff"
+          mkdir -p "${HANDOFF_DATA}"
+          gh api --method GET "repos/${UPSTREAM_REPOSITORY}/pulls" \
+            -f state=open \
+            -f per_page=100 \
+            --paginate --slurp | \
+            jq \
+              --arg repo "${FORK_REPOSITORY}" \
+              --arg prefix "catalog/kanban-task-threads-v" \
+              '[.[][] | select(
+                .head.repo.full_name == $repo and
+                (.head.ref | startswith($prefix))
+              ) | {ref: .head.ref, url: .html_url}]' \
+              > "${HANDOFF_DATA}/open-plugin-prs.json"
+          gh api --method GET "repos/${UPSTREAM_REPOSITORY}/pulls" \
+            -f state=all \
+            -f "head=diegomarino:${CATALOG_BRANCH}" \
+            -f per_page=100 \
+            --paginate --slurp | \
+            jq '[.[][] | {
+              state: (if .merged_at then "MERGED" else (.state | ascii_upcase) end),
+              url: .html_url
+            }]' > "${HANDOFF_DATA}/branch-prs.json"
+          git show "${UPSTREAM_SHA}:plugin-catalog/kanban-task-threads.yaml" \
+            > "${HANDOFF_DATA}/upstream-catalog.yaml"
+          if [ -z "${REMOTE_SHA}" ]; then
+            printf 'null\n' > "${HANDOFF_DATA}/remote-branch.json"
+            : > "${HANDOFF_DATA}/remote-catalog.yaml"
+          else
+            git fetch origin "refs/heads/${CATALOG_BRANCH}"
+            FETCHED_SHA="$(git rev-parse FETCH_HEAD)"
+            if [ "${FETCHED_SHA}" != "${REMOTE_SHA}" ]; then
+              echo "Catalog branch changed while it was being inspected; refusing." >&2
+              exit 1
+            fi
+            PARENT_SHA="$(git rev-parse "${REMOTE_SHA}^")"
+            COMMIT_COUNT="$(git rev-list --count "${UPSTREAM_SHA}..${REMOTE_SHA}")"
+            CHANGED_FILES="$(git diff --name-only "${UPSTREAM_SHA}" "${REMOTE_SHA}")"
+            if [ "${PARENT_SHA}" != "${UPSTREAM_SHA}" ] || \
+               [ "${COMMIT_COUNT}" != "1" ] || \
+               [ "${CHANGED_FILES}" != "plugin-catalog/kanban-task-threads.yaml" ]; then
+              echo "Existing catalog branch is not the expected single-file automation commit." >&2
+              exit 1
+            fi
+            jq -n --arg sha "${REMOTE_SHA}" '{sha: $sha}' > "${HANDOFF_DATA}/remote-branch.json"
+            git show "${REMOTE_SHA}:plugin-catalog/kanban-task-threads.yaml" \
+              > "${HANDOFF_DATA}/remote-catalog.yaml"
           fi
-          OPEN_PLUGIN_PR_REF="$(printf '%s' "${OPEN_PLUGIN_PRS}" | jq -r '.[0].ref // empty')"
-          OPEN_PLUGIN_PR_URL="$(printf '%s' "${OPEN_PLUGIN_PRS}" | jq -r '.[0].url // empty')"
-          if [ -n "${OPEN_PLUGIN_PR_REF}" ] && \
-             [ "${OPEN_PLUGIN_PR_REF}" != "${CATALOG_BRANCH}" ]; then
-            echo "Another catalog PR is already open for this plugin: ${OPEN_PLUGIN_PR_URL}" >&2
-            exit 1
-          fi
-          PR_JSON="$(
-            gh api --method GET "repos/${UPSTREAM_REPOSITORY}/pulls" \
-              -f state=all \
-              -f "head=diegomarino:${CATALOG_BRANCH}" \
-              -f per_page=100 \
-              --paginate --slurp | \
-              jq '[.[][] | {
-                state: (if .merged_at then "MERGED" else (.state | ascii_upcase) end),
-                url: .html_url
-              }]'
-          )"
-          PR_COUNT="$(printf '%s' "${PR_JSON}" | jq 'length')"
-          if [ "${PR_COUNT}" -gt 1 ]; then
-            echo "More than one catalog PR exists for ${CATALOG_BRANCH}; refusing." >&2
-            exit 1
-          fi
-          PR_STATE="$(printf '%s' "${PR_JSON}" | jq -r '.[0].state // empty')"
-          PR_URL="$(printf '%s' "${PR_JSON}" | jq -r '.[0].url // empty')"
-
+          ACTION="$(python ../plugin/scripts/ci/catalog_handoff.py \
+            --open-prs-file "${HANDOFF_DATA}/open-plugin-prs.json" \
+            --branch-prs-file "${HANDOFF_DATA}/branch-prs.json" \
+            --remote-branch-file "${HANDOFF_DATA}/remote-branch.json" \
+            --remote-catalog-file "${HANDOFF_DATA}/remote-catalog.yaml" \
+            --upstream-catalog-file "${HANDOFF_DATA}/upstream-catalog.yaml" \
+            --expected-branch "${CATALOG_BRANCH}" \
+            --expected-pin "${RELEASE_SHA}")"
           {
             echo "branch=${CATALOG_BRANCH}"
             echo "upstream_sha=${UPSTREAM_SHA}"
             echo "remote_sha=${REMOTE_SHA}"
           } >> "${GITHUB_OUTPUT}"
-
-          if [ "${PR_STATE}" = "CLOSED" ]; then
-            echo "Prior catalog PR was closed without merging: ${PR_URL}" >&2
-            exit 1
-          fi
-          if [ "${PR_STATE}" = "MERGED" ]; then
-            git switch --detach "${UPSTREAM_SHA}"
-            python ../plugin/scripts/update_hermes_catalog.py \
-              plugin-catalog/kanban-task-threads.yaml \
-              "${RELEASE_VERSION}" \
-              "${RELEASE_SHA}"
-            if ! git diff --quiet -- plugin-catalog/kanban-task-threads.yaml; then
-              echo "Merged catalog PR does not contain the expected release pin." >&2
+          case "${ACTION}" in
+            create)
+              echo "complete=false" >> "${GITHUB_OUTPUT}"
+              echo "reuse_branch=false" >> "${GITHUB_OUTPUT}"
+              ;;
+            reuse)
+              git switch --detach "${REMOTE_SHA}"
+              python ../plugin/scripts/update_hermes_catalog.py \
+                plugin-catalog/kanban-task-threads.yaml \
+                "${RELEASE_VERSION}" \
+                "${RELEASE_SHA}"
+              git diff --exit-code -- plugin-catalog/kanban-task-threads.yaml
+              python scripts/validate_plugin_catalog.py plugin-catalog/
+              echo "complete=false" >> "${GITHUB_OUTPUT}"
+              echo "reuse_branch=true" >> "${GITHUB_OUTPUT}"
+              ;;
+            already-merged)
+              echo "Catalog PR already merged."
+              git switch --detach "${UPSTREAM_SHA}"
+              python ../plugin/scripts/update_hermes_catalog.py \
+                plugin-catalog/kanban-task-threads.yaml \
+                "${RELEASE_VERSION}" \
+                "${RELEASE_SHA}"
+              git diff --exit-code -- plugin-catalog/kanban-task-threads.yaml
+              python scripts/validate_plugin_catalog.py plugin-catalog/
+              echo "complete=true" >> "${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "Unexpected catalog handoff action: ${ACTION}" >&2
               exit 1
-            fi
-            python scripts/validate_plugin_catalog.py plugin-catalog/
-            echo "Catalog PR already merged: ${PR_URL}"
-            echo "complete=true" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          if [ -z "${REMOTE_SHA}" ]; then
-            if [ "${PR_STATE}" = "OPEN" ]; then
-              echo "Open catalog PR has no source branch: ${PR_URL}" >&2
-              exit 1
-            fi
-            {
-              echo "complete=false"
-              echo "reuse_branch=false"
-            } >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          git fetch origin "refs/heads/${CATALOG_BRANCH}"
-          FETCHED_SHA="$(git rev-parse FETCH_HEAD)"
-          if [ "${FETCHED_SHA}" != "${REMOTE_SHA}" ]; then
-            echo "Catalog branch changed while it was being inspected; refusing." >&2
-            exit 1
-          fi
-          PARENT_SHA="$(git rev-parse "${REMOTE_SHA}^")"
-          COMMIT_COUNT="$(git rev-list --count "${UPSTREAM_SHA}..${REMOTE_SHA}")"
-          CHANGED_FILES="$(git diff --name-only "${UPSTREAM_SHA}" "${REMOTE_SHA}")"
-          if [ "${PARENT_SHA}" != "${UPSTREAM_SHA}" ] || \
-             [ "${COMMIT_COUNT}" != "1" ] || \
-             [ "${CHANGED_FILES}" != "plugin-catalog/kanban-task-threads.yaml" ]; then
-            echo "Existing catalog branch is not the expected single-file automation commit." >&2
-            exit 1
-          fi
-          git switch --detach "${REMOTE_SHA}"
-          python ../plugin/scripts/update_hermes_catalog.py \
-            plugin-catalog/kanban-task-threads.yaml \
-            "${RELEASE_VERSION}" \
-            "${RELEASE_SHA}"
-          if ! git diff --quiet -- plugin-catalog/kanban-task-threads.yaml; then
-            echo "Existing catalog branch does not contain the expected release pin." >&2
-            exit 1
-          fi
-          python scripts/validate_plugin_catalog.py plugin-catalog/
-          if [ "${PR_STATE}" = "OPEN" ]; then
-            echo "Catalog PR already open: ${PR_URL}"
-            echo "complete=true" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          {
-            echo "complete=false"
-            echo "reuse_branch=true"
-          } >> "${GITHUB_OUTPUT}"
+              ;;
+          esac
 
       - name: Prepare a new catalog branch
         id: prepare
@@ -277,10 +255,13 @@ jobs:
         run: |
           set -euo pipefail
           gh auth setup-git
-          git push \
+          if ! git push \
             --force-with-lease="refs/heads/${CATALOG_BRANCH}:" \
             origin \
-            "HEAD:refs/heads/${CATALOG_BRANCH}"
+            "HEAD:refs/heads/${CATALOG_BRANCH}"; then
+            echo "Catalog branch push was rejected. Confirm HERMES_CATALOG_TOKEN has Contents: write on ${FORK_REPOSITORY}, then inspect the remote branch and rerun this manual workflow; it will not retry an ambiguous push." >&2
+            exit 1
+          fi
           {
             echo "branch_sha=${EXPECTED_SHA}"
             echo "created=true"

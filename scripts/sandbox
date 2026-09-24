@@ -12,6 +12,7 @@
 #
 #   sandbox test       run the unit suite through uv, pinned to Python 3.13
 #                      (Hermes requires <3.14: test what runs).
+#   sandbox check      run a named canonical local validation profile.
 #   sandbox lint       ruff check + ruff format --check, per pyproject.toml.
 #   sandbox up         create the sandbox home and show what it is
 #   sandbox env        print the exports, for `eval "$(scripts/sandbox env)"`
@@ -160,7 +161,10 @@ cmd_test() {
     cd "$REPO"
     # --python 3.13: the plugin runs under Hermes's interpreter (<3.14); the
     # suite must run on what production runs, not on whatever brew has today.
-    exec uv run --python 3.13 --with pytest==9.1.1 -- python -m pytest tests/ "$@"
+    if [ "$#" -eq 0 ]; then
+        set -- tests/
+    fi
+    exec uv run --python 3.13 --with pytest==9.1.1 -- python -m pytest "$@"
 }
 
 cmd_lint() {
@@ -171,6 +175,11 @@ cmd_lint() {
     cd "$REPO"
     uvx --from ruff==0.16.8 ruff check .
     uvx --from ruff==0.16.8 ruff format --check .
+}
+
+cmd_check() {
+    cd "$REPO"
+    exec python3 "$REPO/scripts/check.py" "$@"
 }
 
 cmd_reset() {
@@ -188,6 +197,7 @@ cmd_reset() {
 
 case "${1:-}" in
     test)     shift; cmd_test "$@" ;;
+    check)    shift; cmd_check "$@" ;;
     lint)     cmd_lint ;;
     up)       cmd_up ;;
     env)      cmd_env ;;

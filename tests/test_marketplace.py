@@ -96,8 +96,8 @@ def test_public_tree_excludes_agent_controls_and_private_development_context():
 
 
 def test_ci_pins_tools_and_runs_catalog_gates():
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
-    assert 'python-version: ["3.11", "3.12", "3.13"]' in workflow
+    workflow = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
+    assert 'python-version: ["3.11", "3.13"]' in workflow
     assert re.search(r"\bpytest==\d+\.\d+\.\d+\b", workflow)
     assert re.search(r"\bruff==\d+\.\d+\.\d+\b", workflow)
     assert "repository: NousResearch/hermes-agent" in workflow
@@ -127,18 +127,31 @@ def test_ci_pins_tools_and_runs_catalog_gates():
     assert not unpinned, f"GitHub actions must be pinned to full commit SHAs: {unpinned}"
 
 
+def test_pr_validation_pins_its_actions_and_keeps_read_only_permissions():
+    workflow = (ROOT / ".github" / "workflows" / "pr-validation.yml").read_text()
+
+    assert re.search(r"(?m)^permissions:\n  contents: read$", workflow)
+    assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
+    assert "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" in workflow
+    assert "github.com/rhysd/actionlint/cmd/actionlint@v1.7.9" in workflow
+    assert 'echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"' in workflow
+    assert "python -m pip install --disable-pip-version-check uv==0.8.15" in workflow
+
+    external_actions = re.findall(r"^\s+uses: ([^./][^@]+)@([^\s#]+)", workflow, re.MULTILINE)
+    assert external_actions
+    assert all(re.fullmatch(r"[0-9a-f]{40}", ref) for _, ref in external_actions)
+
+
 def test_required_hermes_check_has_a_stable_name_and_fails_closed():
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
     gate = re.search(r"^  hermes-validate:\n(.*?)(?=^  \S|\Z)", workflow, re.MULTILINE | re.DOTALL)
     assert gate, "Required Hermes check is missing"
     body = gate[1]
     assert "name: Hermes plugin validation\n" in body
     assert "strategy:" not in body, "A matrix changes the required check's name"
     assert "needs: hermes-compatibility" in body
-    assert "if: ${{ always() }}" in body, "Failed dependencies must still report the gate"
-    script = re.search(r"run: \|\n((?:        [^\n]*\n)+)", body)
-    assert script, "Required check must verify the matrix result"
-    command = "\n".join(line[8:] for line in script[1].splitlines())
+    assert "if: ${{ always() && github.event_name == 'push' }}" in body
+    command = 'test "$COMPATIBILITY_RESULT" = success'
     for result in ("success", "failure", "cancelled", "skipped", ""):
         completed = subprocess.run(
             ["bash", "-c", command],
@@ -150,7 +163,7 @@ def test_required_hermes_check_has_a_stable_name_and_fails_closed():
 
 
 def test_ci_uploads_sarif_even_when_the_scanner_gate_fails():
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
     assert "output: plugin-scanner.sarif" in workflow
     assert "upload_sarif: false" in workflow
     assert "github/codeql-action/upload-sarif@" in workflow
@@ -159,12 +172,36 @@ def test_ci_uploads_sarif_even_when_the_scanner_gate_fails():
 
 
 def test_local_quality_tools_match_ci_pins():
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
     sandbox = (ROOT / "scripts" / "sandbox").read_text()
     pinned = dict(re.findall(r"\b(pytest|ruff)==(\d+\.\d+\.\d+)\b", workflow))
     assert pinned.keys() == {"pytest", "ruff"}
     for tool, version in pinned.items():
         assert f"{tool}=={version}" in sandbox
+
+
+def test_candidate_gate_has_only_the_planned_expensive_jobs():
+    workflow = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
+    assert workflow.count('python-version: ["3.11", "3.13"]') == 1
+    assert workflow.count("hermes-ref:") == 1
+    assert workflow.count("min_score: 80") == 1
+    assert "release-candidate:" in workflow
+    assert "needs: [quality, hermes-validate, plugin-scanner]" in workflow
+
+
+def test_manual_probe_has_an_event_isolated_concurrency_lane():
+    workflow = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
+
+    assert "group: release-candidate-${{ github.event_name }}-${{ github.ref }}" in workflow
+    assert "cancel-in-progress: true" in workflow
+
+
+def test_promotion_identity_does_not_repeat_expensive_candidate_work():
+    workflow = (ROOT / ".github" / "workflows" / "promotion-identity.yml").read_text()
+    assert "python -m pytest" not in workflow
+    assert "ruff " not in workflow
+    assert "hermes-agent" not in workflow
+    assert "ai-plugin-scanner" not in workflow
 
 
 def test_privacy_docs_disclose_dependency_announcement_body_excerpt():

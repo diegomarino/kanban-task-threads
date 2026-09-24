@@ -24,3 +24,7 @@ select = [
 # Tests import from conftest via sys.path and group by scenario, not by module.
 "tests/*" = ["E402"]
 "scripts/*" = ["E402"]
+
+[tool.coverage.run]
+source = ["kanban_task_threads", "."]
+omit = ["scripts/*", "tests/*"]
