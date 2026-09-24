@@ -21,7 +21,8 @@ def requires_full_gate(paths: list[str]) -> bool:
 
 
 def has_success(runs: list[dict[str, Any]], sha: str) -> bool:
-    return any(run.get("headSha") == sha and run.get("conclusion") == "success" for run in runs)
+    matching_runs = [run for run in runs if run.get("headSha") == sha]
+    return len(matching_runs) == 1 and matching_runs[0].get("conclusion") == "success"
 
 
 def require_exact_success(runs: list[dict[str, Any]], sha: str) -> None:
