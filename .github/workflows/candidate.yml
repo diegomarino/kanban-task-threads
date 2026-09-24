@@ -140,6 +140,7 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/pre-release' }}
     runs-on: ubuntu-latest
     permissions:
+      checks: write
       contents: read
       pull-requests: write
     steps:
@@ -171,9 +172,28 @@ jobs:
             PROMOTION_PR_URL="$(printf '%s' "${OPEN_PRS}" | jq -r '.[0].url')"
             gh pr edit "${PROMOTION_PR_URL}" --title "${PROMOTION_TITLE}" --body "${PROMOTION_BODY}"
             printf 'Promotion PR already open and normalized: %s\n' "${PROMOTION_PR_URL}"
-            exit 0
+          else
+            PROMOTION_PR_URL="$(gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head pre-release --title "${PROMOTION_TITLE}" --body "${PROMOTION_BODY}")"
           fi
-          gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head pre-release --title "${PROMOTION_TITLE}" --body "${PROMOTION_BODY}"
+          PROMOTION_PR="$(gh api "${PROMOTION_PR_URL}" --jq '{headSha: .head.sha, headRepo: .head.repo.full_name, headRef: .head.ref, baseRef: .base.ref}')"
+          test "$(printf '%s' "${PROMOTION_PR}" | jq -r '.headSha')" = "${GITHUB_SHA}"
+          test "$(printf '%s' "${PROMOTION_PR}" | jq -r '.headRepo')" = "${GITHUB_REPOSITORY}"
+          test "$(printf '%s' "${PROMOTION_PR}" | jq -r '.headRef')" = pre-release
+          test "$(printf '%s' "${PROMOTION_PR}" | jq -r '.baseRef')" = main
+          jq -n \
+            --arg sha "${GITHUB_SHA}" \
+            --arg details_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{
+              "name": "Promotion identity",
+              "head_sha": $sha,
+              "status": "completed",
+              "conclusion": "success",
+              "details_url": $details_url,
+              "output": {
+                "title": "Validated pre-release promotion",
+                "summary": "The exact pre-release SHA passed the Release candidate gate."
+              }
+            }' | gh api --method POST "repos/${GITHUB_REPOSITORY}/check-runs" --input -
 
   upstream-hermes-probe:
     name: Upstream Hermes probe

@@ -190,6 +190,13 @@ jobs:
               echo "reuse_branch=false" >> "${GITHUB_OUTPUT}"
               ;;
             reuse)
+              git switch --detach "${REMOTE_SHA}"
+              python ../plugin/scripts/update_hermes_catalog.py \
+                plugin-catalog/kanban-task-threads.yaml \
+                "${RELEASE_VERSION}" \
+                "${RELEASE_SHA}"
+              git diff --exit-code -- plugin-catalog/kanban-task-threads.yaml
+              python scripts/validate_plugin_catalog.py plugin-catalog/
               echo "complete=false" >> "${GITHUB_OUTPUT}"
               echo "reuse_branch=true" >> "${GITHUB_OUTPUT}"
               ;;

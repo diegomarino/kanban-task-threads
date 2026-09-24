@@ -271,6 +271,7 @@ def test_pre_release_opens_or_reuses_one_promotion_pr_after_validation():
     assert "github.event_name == 'push'" in promotion
     assert "github.ref == 'refs/heads/pre-release'" in promotion
     assert _job_permissions(workflow, "promotion-pr") == {
+        "checks": "write",
         "contents": "read",
         "pull-requests": "write",
     }
@@ -287,6 +288,10 @@ def test_pre_release_opens_or_reuses_one_promotion_pr_after_validation():
     assert 'if [ "${OPEN_PR_COUNT}" -gt 1 ]; then' in promotion
     assert "gh pr edit" in promotion
     assert "gh pr create" in promotion
+    assert '"name": "Promotion identity"' in promotion
+    assert '"head_sha": $sha' in promotion
+    assert '"conclusion": "success"' in promotion
+    assert "repos/${GITHUB_REPOSITORY}/check-runs" in promotion
     assert "--base main" in promotion
     assert "--head pre-release" in promotion
     assert 'PROMOTION_TITLE="chore(release): promote pre-release to main"' in promotion
@@ -362,6 +367,11 @@ def test_catalog_pr_is_a_manual_main_only_workflow_with_a_scoped_credential():
     assert 'if .merged_at then "MERGED"' in workflow
     assert 'case "${ACTION}" in' in workflow
     assert "already-merged)" in workflow
+    reuse = workflow.split("reuse)", 1)[1].split(";;", 1)[0]
+    assert 'git switch --detach "${REMOTE_SHA}"' in reuse
+    assert "scripts/update_hermes_catalog.py" in reuse
+    assert "git diff --exit-code" in reuse
+    assert "scripts/validate_plugin_catalog.py plugin-catalog/" in reuse
     already_merged = workflow.split("already-merged)", 1)[1].split(";;", 1)[0]
     assert "scripts/update_hermes_catalog.py" in already_merged
     assert "git diff --exit-code" in already_merged
