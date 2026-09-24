@@ -165,6 +165,23 @@ def test_forum_setup_error_blocks_publication_and_retries_on_the_next_pass(board
     assert transport.ops()[:2] == ["prepare_forum", "prepare_forum"]
 
 
+def test_unexpected_forum_setup_error_warns_and_publishes_nothing(board, tmp_path):
+    walk_lifecycle(board)
+    store = StateStore(tmp_path / "state.db")
+    transport = FakeTransport({"title_state", "tags"})
+    transport.record_prepare = True
+    transport.queue_error("prepare_forum", RuntimeError("broken setup"))
+    consumer = Consumer(tmp_path / "kanban.db", store, transport, board="default", holder="bot")
+
+    report = consumer.run_once(now=NOW)
+
+    assert report.warnings == [
+        "Discord forum setup failed, will retry: RuntimeError('broken setup')"
+    ]
+    assert transport.ops() == ["prepare_forum"]
+    assert store.get_cursor("default") == 0
+
+
 def test_losing_lease_during_forum_setup_forces_fresh_setup_after_reacquire(board, tmp_path):
     store = StateStore(tmp_path / "state.db")
     transport = FakeTransport({"title_state", "tags"})
@@ -377,6 +394,23 @@ def test_failed_card_refresh_is_repainted_without_new_events(board, parts):
     report3 = consumer.run_once(now=NOW + 20)  # repainted once, then silent
     assert len(transport.ops("edit_card")) == n_edits + 1
     assert not report3.edited
+
+
+def test_missing_task_clears_dirty_card_without_transport_call(board, parts):
+    store, transport, consumer = parts
+    insert_task(board, "t_1", status="running")
+    add_event(board, "t_1", "created", {"status": "ready"})
+    consumer.run_once(now=NOW)
+    store.set_card_dirty("default", "t_1", True)
+    edits_before = len(transport.ops("edit_card"))
+    board.execute("DELETE FROM tasks WHERE id = 't_1'")
+    board.commit()
+
+    report = consumer.run_once(now=NOW + 10)
+
+    assert report.warnings == []
+    assert len(transport.ops("edit_card")) == edits_before
+    assert store.get_post("default", "t_1")["card_dirty"] == 0
 
 
 def test_losing_the_lease_mid_pass_aborts_before_the_next_task(board, parts):
