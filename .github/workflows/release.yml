@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-main-provenance:
+    name: Release provenance
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out the exact main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify promotion or Release Please merge provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${SHA}"
+          git diff --name-only "${SHA}^1" "${SHA}" > changed-paths.txt
+          git rev-list --parents -n 1 "${SHA}" | python3 -c 'import json,sys; values=sys.stdin.read().split(); print(json.dumps({"commit": values[0], "parents": values[1:]}))' > merge.json
+          PARENTS="$(python3 scripts/ci/verify_release.py merge-parents --json-file merge.json)"
+          python3 - <<'PY'
+          import json, re, tomllib
+          from pathlib import Path
+          manifest = json.loads(Path(".release-please-manifest.json").read_text())["."]
+          plugin = re.search(r"(?m)^version:\s*[\"']?([^\"'\s]+)", Path("plugin.yaml").read_text()).group(1)
+          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          lock = re.search(r'(?ms)^name = "kanban-task-threads"\nversion = "([^"]+)"', Path("uv.lock").read_text()).group(1)
+          Path("versions.json").write_text(json.dumps({"manifest": manifest, "plugin": plugin, "project": project, "lock": lock}))
+          PY
+          if python3 scripts/ci/verify_release.py release-only --paths-file changed-paths.txt; then
+            VERSION="$(python3 scripts/ci/verify_release.py versions --json-file versions.json)"
+            grep -F "## [${VERSION}]" CHANGELOG.md >/dev/null
+            gh api "repos/${REPOSITORY}/commits/${SHA}/pulls" --paginate --slurp | jq '[.[][] | select(.merged_at != null and .base.ref == "main" and .head.repo.full_name == $repository and .head.ref == "release-please--branches--main" and .user.login == "github-actions[bot]")] | length' --arg repository "${REPOSITORY}" > release-pr-count.txt
+            RELEASE_PR_COUNT="$(cat release-pr-count.txt)"
+            test "${RELEASE_PR_COUNT}" = 1
+            exit 0
+          fi
+          CANDIDATE_SHA="$(printf '%s' "${PARENTS}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["second"])')"
+          gh api "repos/${REPOSITORY}/actions/workflows/candidate.yml/runs?head_sha=${CANDIDATE_SHA}&event=push&status=completed&per_page=100" --paginate --slurp | jq '[.[] | .workflow_runs[] | select(.event == "push" and .name == "Release candidate") | {headSha: .head_sha, conclusion: .conclusion}]' > candidate-runs.json
+          python3 scripts/ci/verify_candidate.py --runs-file candidate-runs.json --sha "${CANDIDATE_SHA}"
+
+  release-metadata:
+    name: Release metadata
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'release-please--branches--main' && github.event.pull_request.user.login == 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the exact release PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.9
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+      - name: Verify the release-only diff and synchronized versions
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${HEAD_SHA}"
+          git cat-file -e "${BASE_SHA}^{commit}"
+          git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" > changed-paths.txt
+          python3 scripts/ci/verify_release.py release-only --paths-file changed-paths.txt
+          python3 - <<'PY'
+          import json, re, tomllib
+          from pathlib import Path
+          manifest = json.loads(Path(".release-please-manifest.json").read_text())["."]
+          plugin = re.search(r"(?m)^version:\s*[\"']?([^\"'\s]+)", Path("plugin.yaml").read_text()).group(1)
+          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          lock = re.search(r'(?ms)^name = "kanban-task-threads"\nversion = "([^"]+)"', Path("uv.lock").read_text()).group(1)
+          Path("versions.json").write_text(json.dumps({"manifest": manifest, "plugin": plugin, "project": project, "lock": lock}))
+          PY
+          VERSION="$(python3 scripts/ci/verify_release.py versions --json-file versions.json)"
+          grep -F "## [${VERSION}]" CHANGELOG.md >/dev/null
+          actionlint .github/workflows/*.yml
+
+  release-please:
+    name: Release Please
+    needs: verify-main-provenance
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Open or update the release PR, or publish a merged release
+        id: release
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

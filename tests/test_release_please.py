@@ -68,7 +68,9 @@ def _history_with_change(tmp_path: Path, relative_path: str) -> tuple[Path, str,
     return repo, base, head
 
 
-def _run_integration_classifier(repo: Path, base: str, head: str) -> subprocess.CompletedProcess[str]:
+def _run_integration_classifier(
+    repo: Path, base: str, head: str
+) -> subprocess.CompletedProcess[str]:
     output = repo / "github-output"
     environment = os.environ | {"BASE_SHA": base, "HEAD_SHA": head, "GITHUB_OUTPUT": str(output)}
     return subprocess.run(
@@ -192,7 +194,9 @@ def test_integration_classifier_skips_docs_only_changes(tmp_path: Path):
     assert (repo / "github-output").read_text() == "integration_changed=false\n"
 
 
-def test_integration_classifier_fails_closed_for_missing_or_mismatched_pull_request_shas(tmp_path: Path):
+def test_integration_classifier_fails_closed_for_missing_or_mismatched_pull_request_shas(
+    tmp_path: Path,
+):
     repo, base, head = _history_with_change(tmp_path, "plugin.yaml")
 
     missing_base = _run_integration_classifier(repo, "0" * 40, head)
@@ -211,6 +215,46 @@ def test_candidate_aggregates_every_expensive_validation_job():
     assert "HERMES_RESULT" in aggregate
     assert "SCANNER_RESULT" in aggregate
     assert "release-please-action" not in workflow
+
+
+def test_release_workflow_preserves_release_please_public_contract():
+    workflow = (ROOT / ".github/workflows/release.yml").read_text()
+    trigger = _top_level_block(workflow, "on")
+    release = _job_block(workflow, "release-please")
+
+    assert re.search(r"(?m)^  push:\s*$", trigger)
+    assert re.search(r"(?m)^    branches: \[main\]\s*$", trigger)
+    assert "name: Release Please" in release
+    assert "needs: verify-main-provenance" in release
+    assert "googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071" in release
+    assert "token: ${{ secrets.GITHUB_TOKEN }}" in release
+    assert "config-file: release-please-config.json" in release
+    assert "manifest-file: .release-please-manifest.json" in release
+    for output in ("release_created", "version", "sha", "tag_name"):
+        assert f"{output}: ${{{{ steps.release.outputs.{output} }}}}" in release
+    assert _job_permissions(workflow, "release-please") == {
+        "contents": "write",
+        "issues": "write",
+        "pull-requests": "write",
+    }
+
+
+def test_release_stages_are_provenance_only_and_release_pr_is_allowlisted():
+    workflow = (ROOT / ".github/workflows/release.yml").read_text()
+    assert "strategy:" not in workflow
+    assert "hermes-agent" not in workflow
+    assert "ai-plugin-scanner" not in workflow
+    assert "python -m pytest" not in workflow
+    assert "verify_release.py release-only" in workflow
+    assert "verify_release.py versions" in workflow
+    assert "verify_candidate.py --runs-file" in workflow
+    assert "name: Release metadata" in workflow
+    assert "github.com/rhysd/actionlint/cmd/actionlint@v1.7.9" in workflow
+    assert "commits/${SHA}/pulls" in workflow
+    assert '.head.ref == "release-please--branches--main"' in workflow
+    assert '.user.login == "github-actions[bot]"' in workflow
+    assert 'test "${RELEASE_PR_COUNT}" = 1' in workflow
+    assert "release-please-action" in _job_block(workflow, "release-please")
 
 
 def test_pre_release_opens_or_reuses_one_promotion_pr_after_validation():

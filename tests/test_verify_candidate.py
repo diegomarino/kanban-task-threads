@@ -69,7 +69,14 @@ def test_cli_requires_one_exact_successful_candidate_run(tmp_path):
     payload.write_text(json.dumps([{"headSha": "candidate", "conclusion": "success"}]))
 
     result = subprocess.run(
-        [sys.executable, "scripts/ci/verify_candidate.py", "--runs-file", str(payload), "--sha", "candidate"],
+        [
+            sys.executable,
+            "scripts/ci/verify_candidate.py",
+            "--runs-file",
+            str(payload),
+            "--sha",
+            "candidate",
+        ],
         capture_output=True,
         text=True,
     )

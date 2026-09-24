@@ -11,8 +11,11 @@ class CandidateError(ValueError):
 
 
 FULL_GATE_INPUTS = {
-    "__init__.py", "plugin.yaml", "kanban_task_threads/runtime.py",
-    "scripts/check_startup.py", ".github/workflows/candidate.yml",
+    "__init__.py",
+    "plugin.yaml",
+    "kanban_task_threads/runtime.py",
+    "scripts/check_startup.py",
+    ".github/workflows/candidate.yml",
 }
 
 

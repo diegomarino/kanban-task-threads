@@ -128,6 +128,11 @@ HERMES_HOME="$PWD/.sandbox" \
 actionlint .github/workflows/*.yml
 ```
 
+After candidate validation, promotion and release stages verify exact commit
+identity, merge parents, release-only paths, and synchronized versions. They do
+not repeat the Python, Hermes, or scanner matrix. Release Please remains the
+only mechanism that opens the release PR and publishes the merged release.
+
 The tests include the Release Please contract: the public bootstrap version,
 all synchronized version targets, the CI gates, the pinned action, the release
 outputs, the catalog updater's confinement, and the workflow's permission
