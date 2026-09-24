@@ -71,10 +71,11 @@ this order; none of these steps is proven by local checks:
    Acceptance requires at least 70% fewer jobs across the release train,
    without reducing supported Hermes refs, scanner score, or provenance checks.
 
-The projected ordinary-train topology is 1 PR runner job, 7 candidate-stage
-jobs (2 Python, 2 Hermes, Hermes aggregate, scanner, release aggregate), and 1
-lightweight job at each downstream PR/push boundary. These are local workflow
-counts, not observed GitHub-hosted measurements.
+The projected ordinary-train topology is 1 feature-PR runner job; 8 candidate
+workflow jobs (2 Python, 2 Hermes, Hermes aggregate, scanner, release
+aggregate, promotion-PR creation); 1 promotion-PR identity job; 2 promotion
+main-push jobs; 2 Release Please PR jobs; and 2 release-merge push jobs. These
+are local workflow counts, not observed GitHub-hosted measurements.
 
 ## Automated release flow
 
