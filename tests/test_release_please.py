@@ -251,9 +251,14 @@ def test_release_stages_are_provenance_only_and_release_pr_is_allowlisted():
     assert "name: Release metadata" in workflow
     assert "github.com/rhysd/actionlint/cmd/actionlint@v1.7.9" in workflow
     assert "commits/${SHA}/pulls" in workflow
+    assert "BEFORE_SHA: ${{ github.event.before }}" in workflow
+    assert "--expected-first \"${BEFORE_SHA}\"" in workflow
     assert '.head.ref == "release-please--branches--main"' in workflow
     assert '.user.login == "github-actions[bot]"' in workflow
     assert 'test "${RELEASE_PR_COUNT}" = 1' in workflow
+    assert '.head.ref == "pre-release"' in workflow
+    assert '.head.sha == $candidate' in workflow
+    assert 'test "${PROMOTION_PR_COUNT}" = 1' in workflow
     assert "release-please-action" in _job_block(workflow, "release-please")
 
 

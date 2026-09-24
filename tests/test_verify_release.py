@@ -40,7 +40,9 @@ def test_stable_tag_parser_rejects_non_stable_tags(tag):
 
 
 def test_merge_parent_verification_requires_exactly_two_distinct_parents():
-    assert verify_release.require_merge_parents("merge", ["main-parent", "candidate"]) == (
+    assert verify_release.require_merge_parents(
+        "merge", ["main-parent", "candidate"], expected_first="main-parent"
+    ) == (
         "main-parent",
         "candidate",
     )
@@ -48,6 +50,10 @@ def test_merge_parent_verification_requires_exactly_two_distinct_parents():
         verify_release.require_merge_parents("merge", ["only-one"])
     with pytest.raises(verify_release.ReleaseError):
         verify_release.require_merge_parents("merge", ["same", "same"])
+    with pytest.raises(verify_release.ReleaseError):
+        verify_release.require_merge_parents(
+            "merge", ["wrong-main", "candidate"], expected_first="main-parent"
+        )
 
 
 def test_cli_fails_closed_on_missing_or_invalid_json(tmp_path):

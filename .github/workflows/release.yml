@@ -25,6 +25,7 @@ jobs:
           persist-credentials: false
       - name: Verify promotion or Release Please merge provenance
         env:
+          BEFORE_SHA: ${{ github.event.before }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SHA: ${{ github.sha }}
@@ -34,7 +35,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "${SHA}"
           git diff --name-only "${SHA}^1" "${SHA}" > changed-paths.txt
           git rev-list --parents -n 1 "${SHA}" | python3 -c 'import json,sys; values=sys.stdin.read().split(); print(json.dumps({"commit": values[0], "parents": values[1:]}))' > merge.json
-          PARENTS="$(python3 scripts/ci/verify_release.py merge-parents --json-file merge.json)"
+          PARENTS="$(python3 scripts/ci/verify_release.py merge-parents --json-file merge.json --expected-first "${BEFORE_SHA}")"
           python3 - <<'PY'
           import json, re, tomllib
           from pathlib import Path
@@ -55,6 +56,9 @@ jobs:
           CANDIDATE_SHA="$(printf '%s' "${PARENTS}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["second"])')"
           gh api "repos/${REPOSITORY}/actions/workflows/candidate.yml/runs?head_sha=${CANDIDATE_SHA}&event=push&status=completed&per_page=100" --paginate --slurp | jq '[.[] | .workflow_runs[] | select(.event == "push" and .name == "Release candidate") | {headSha: .head_sha, conclusion: .conclusion}]' > candidate-runs.json
           python3 scripts/ci/verify_candidate.py --runs-file candidate-runs.json --sha "${CANDIDATE_SHA}"
+          gh api "repos/${REPOSITORY}/commits/${SHA}/pulls" --paginate --slurp | jq '[.[][] | select(.merged_at != null and .merge_commit_sha == $merge and .base.ref == "main" and .head.repo.full_name == $repository and .head.ref == "pre-release" and .head.sha == $candidate)] | length' --arg merge "${SHA}" --arg repository "${REPOSITORY}" --arg candidate "${CANDIDATE_SHA}" > promotion-pr-count.txt
+          PROMOTION_PR_COUNT="$(cat promotion-pr-count.txt)"
+          test "${PROMOTION_PR_COUNT}" = 1
 
   release-metadata:
     name: Release metadata

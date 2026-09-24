@@ -46,9 +46,13 @@ def parse_stable_tag(tag: str) -> str:
     return match.group(1)
 
 
-def require_merge_parents(commit: str, parents: list[str]) -> tuple[str, str]:
+def require_merge_parents(
+    commit: str, parents: list[str], *, expected_first: str | None = None
+) -> tuple[str, str]:
     if not commit or len(parents) != 2 or parents[0] == parents[1] or commit in parents:
         raise ReleaseError("A release-train main update must be a two-parent merge commit.")
+    if expected_first is not None and parents[0] != expected_first:
+        raise ReleaseError("The merge first parent is not the previous main commit.")
     return parents[0], parents[1]
 
 
@@ -65,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     versions.add_argument("--json-file", type=Path, required=True)
     merge = subparsers.add_parser("merge-parents")
     merge.add_argument("--json-file", type=Path, required=True)
+    merge.add_argument("--expected-first")
     arguments = parser.parse_args(argv)
     try:
         if arguments.command == "release-only":
@@ -73,7 +78,9 @@ def main(argv: list[str] | None = None) -> int:
             print(require_one_version(_json(arguments.json_file)))
         else:
             payload = _json(arguments.json_file)
-            first, second = require_merge_parents(payload["commit"], payload["parents"])
+            first, second = require_merge_parents(
+                payload["commit"], payload["parents"], expected_first=arguments.expected_first
+            )
             print(json.dumps({"first": first, "second": second}))
     except (ReleaseError, OSError, json.JSONDecodeError, KeyError, TypeError) as error:
         print(error)
