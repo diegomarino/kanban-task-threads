@@ -127,6 +127,20 @@ def test_ci_pins_tools_and_runs_catalog_gates():
     assert not unpinned, f"GitHub actions must be pinned to full commit SHAs: {unpinned}"
 
 
+def test_pr_validation_pins_its_actions_and_keeps_read_only_permissions():
+    workflow = (ROOT / ".github" / "workflows" / "pr-validation.yml").read_text()
+
+    assert re.search(r"(?m)^permissions:\n  contents: read$", workflow)
+    assert "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" in workflow
+    assert "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" in workflow
+    assert "github.com/rhysd/actionlint/cmd/actionlint@v1.7.9" in workflow
+    assert 'echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"' in workflow
+
+    external_actions = re.findall(r"^\s+uses: ([^./][^@]+)@([^\s#]+)", workflow, re.MULTILINE)
+    assert external_actions
+    assert all(re.fullmatch(r"[0-9a-f]{40}", ref) for _, ref in external_actions)
+
+
 def test_required_hermes_check_has_a_stable_name_and_fails_closed():
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
     gate = re.search(r"^  hermes-validate:\n(.*?)(?=^  \S|\Z)", workflow, re.MULTILINE | re.DOTALL)

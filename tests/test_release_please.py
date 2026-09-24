@@ -33,6 +33,17 @@ def _job_permissions(workflow: str, job: str) -> dict[str, str]:
     return dict(re.findall(r"(?m)^      ([a-z-]+): (read|write|none)\s*$", match.group("body")))
 
 
+def _integration_surface_changed(paths: list[str]) -> bool:
+    integration_surfaces = {
+        "__init__.py",
+        "plugin.yaml",
+        "kanban_task_threads/runtime.py",
+        "scripts/check_startup.py",
+        ".github/workflows/ci.yml",
+    }
+    return bool(integration_surfaces.intersection(paths))
+
+
 def _public_versions(root: Path) -> dict[str, list[str]]:
     manifest = json.loads((root / ".release-please-manifest.json").read_text())
     pyproject = tomllib.loads((root / "pyproject.toml").read_text())
@@ -88,11 +99,47 @@ def test_ci_runs_on_integration_and_public_main_with_read_only_default_permissio
 
     assert re.search(r"(?m)^  push:\s*$", trigger)
     assert re.search(r"(?m)^    branches: \[pre-release, main\]\s*$", trigger)
-    assert re.search(r"(?m)^  pull_request:\s*$", trigger)
+    assert not re.search(r"(?m)^  pull_request:\s*$", trigger)
     assert "workflow_dispatch:" not in trigger
 
     parsed_permissions = dict(re.findall(r"(?m)^  ([a-z-]+): (read|write|none)\s*$", permissions))
     assert parsed_permissions == {"contents": "read"}
+
+
+def test_pr_validation_is_one_job_and_cancels_superseded_commits():
+    workflow = (ROOT / ".github/workflows/pr-validation.yml").read_text()
+    jobs = _top_level_block(workflow, "jobs")
+    concurrency = _top_level_block(workflow, "concurrency")
+
+    assert set(re.findall(r"(?m)^  ([a-z0-9-]+):\s*$", jobs)) == {"validate"}
+    assert "group: pr-validation-${{ github.event.pull_request.number }}" in concurrency
+    assert "cancel-in-progress: true" in concurrency
+    assert "name: PR validation" in _job_block(workflow, "validate")
+
+
+def test_pr_validation_runs_the_canonical_fast_gate_once():
+    workflow = (ROOT / ".github/workflows/pr-validation.yml").read_text()
+    validate = _job_block(workflow, "validate")
+
+    assert validate.count("python3 scripts/check.py fast") == 1
+    assert "matrix:" not in _top_level_block(workflow, "jobs")
+
+
+def test_pr_validation_classifies_integration_surfaces_from_exact_base_and_head():
+    workflow = (ROOT / ".github/workflows/pr-validation.yml").read_text()
+    changes = _job_block(workflow, "validate")
+
+    assert "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in changes
+    assert "HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in changes
+    assert 'git cat-file -e "${BASE_SHA}^{commit}"' in changes
+    assert 'git diff --name-only "${BASE_SHA}" "${HEAD_SHA}"' in changes
+    assert 'if [ "${CHECKED_OUT_SHA}" != "${HEAD_SHA}" ]; then' in changes
+
+
+def test_integration_change_classification_includes_workflow_only_changes():
+    assert _integration_surface_changed([".github/workflows/ci.yml"])
+    assert _integration_surface_changed(["README.md", "plugin.yaml"])
+    assert not _integration_surface_changed(["README.md", "docs/testing.md"])
 
 
 def test_release_waits_for_every_validation_job_and_exports_release_identity():
