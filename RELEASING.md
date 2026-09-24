@@ -39,7 +39,7 @@ does not imply prerelease SemVer: no beta tag or GitHub prerelease is created,
 and consumers who want the integrated candidate can explicitly pull that
 branch.
 
-Keep the **Main PR policy** CI check required. It rejects ordinary PRs aimed at
+Keep the **Promotion identity** CI check required. It rejects ordinary PRs aimed at
 `main`; only the repository's `pre-release` promotion and the exact
 `release-please--branches--main` PR authored by `github-actions[bot]` pass. The
 remote branch protections must also prevent direct pushes, because checked-in
@@ -50,6 +50,31 @@ on `pre-release`. After a stable release, synchronize `main` back before the
 next promotion so the Release Please version and changelog commit becomes the
 new integration baseline. Creating or protecting the remote branch is an
 activation operation, not an effect of these checked-in files.
+
+### Pending CI activation
+
+After this implementation is reviewed and pushed, activate the topology in
+this order; none of these steps is proven by local checks:
+
+1. Observe one feature PR to `pre-release` with exactly one **PR validation**
+   job, then push a harmless follow-up while it runs and confirm cancellation.
+2. Merge to `pre-release` and record the exact SHA whose **Release candidate**
+   workflow passes two Python jobs, two pinned-Hermes jobs, one scanner job,
+   and the aggregate check.
+3. Confirm the promotion PR runs only **Promotion identity**, and confirm the
+   Release Please PR runs **Promotion identity** plus **Release metadata**
+   without repeating the expensive candidate jobs.
+4. Only then replace retired branch-protection check names: require **PR
+   validation** on `pre-release` feature PRs and **Promotion identity** on
+   `main`. Read back the persisted ruleset before merging anything.
+5. Record pre-change and post-change runner-job counts and wall times here.
+   Acceptance requires at least 70% fewer jobs across the release train,
+   without reducing supported Hermes refs, scanner score, or provenance checks.
+
+The projected ordinary-train topology is 1 PR runner job, 7 candidate-stage
+jobs (2 Python, 2 Hermes, Hermes aggregate, scanner, release aggregate), and 1
+lightweight job at each downstream PR/push boundary. These are local workflow
+counts, not observed GitHub-hosted measurements.
 
 ## Automated release flow
 
@@ -97,8 +122,9 @@ For each release:
    pin to the stable release selected by the operator. The automation never
    merges upstream.
 
-The CI workflow starts Release Please only on `main`, after the Python
-3.11–3.13 matrix, Hermes validation, and the HOL scanner have all passed. It
+The release workflow starts Release Please only on `main`, after proving the
+exact promotion or bot-authored Release Please merge. It reuses the candidate's
+exact successful SHA instead of repeating Python, Hermes, or scanner jobs, and
 does not invoke the catalog workflow. The manual catalog workflow accepts only
 a published, non-draft, non-prerelease `vX.Y.Z` release, resolves its tag to the
 exact commit, and verifies that commit's release manifest before touching the

@@ -5,12 +5,12 @@ on:
     branches: [main]
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
   verify-promotion-identity:
     name: Promotion identity
-    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'pre-release' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out the exact promotion head
@@ -24,13 +24,22 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
           test "${HEAD_REPOSITORY}" = "${REPOSITORY}"
-          test "${HEAD_REF}" = pre-release
           test "$(git rev-parse HEAD)" = "${HEAD_SHA}"
+          if [ "${HEAD_REF}" = "release-please--branches--main" ] && \
+             [ "${PR_AUTHOR}" = "github-actions[bot]" ]; then
+            echo "Exact Release Please PR identity accepted; Release metadata owns its diff checks."
+            exit 0
+          fi
+          if [ "${HEAD_REF}" != pre-release ]; then
+            echo "Only the pre-release promotion or Release Please may target main." >&2
+            exit 1
+          fi
           CURRENT_SHA="$(gh api "repos/${REPOSITORY}/git/ref/heads/pre-release" --jq '.object.sha')"
           test "${CURRENT_SHA}" = "${HEAD_SHA}"
           gh api "repos/${REPOSITORY}/actions/workflows/candidate.yml/runs?head_sha=${HEAD_SHA}&event=push&status=completed&per_page=100" --paginate --slurp | jq '[.[] | .workflow_runs[] | select(.event == "push" and .name == "Release candidate") | {headSha: .head_sha, conclusion: .conclusion}]' > candidate-runs.json

@@ -301,8 +301,13 @@ def test_promotion_identity_fails_closed_on_wrong_origin_or_candidate_data():
     workflow = (ROOT / ".github/workflows/promotion-identity.yml").read_text()
     identity = _job_block(workflow, "verify-promotion-identity")
 
-    assert "head.repo.full_name == github.repository" in identity
-    assert "head.ref == 'pre-release'" in identity
+    assert "actions: read" in workflow
+    assert "if: ${{" not in identity
+    assert "github.event.pull_request.head.repo.full_name" in identity
+    assert "github.event.pull_request.user.login" in identity
+    assert '"${HEAD_REF}" = "release-please--branches--main"' in identity
+    assert '"${PR_AUTHOR}" = "github-actions[bot]"' in identity
+    assert "Only the pre-release promotion or Release Please may target main" in identity
     assert "git/ref/heads/pre-release" in identity
     assert 'test "${CURRENT_SHA}" = "${HEAD_SHA}"' in identity
     assert "actions/workflows/candidate.yml/runs?head_sha=${HEAD_SHA}&event=push" in identity
