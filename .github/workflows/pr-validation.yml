@@ -29,6 +29,7 @@ jobs:
           check-latest: false
       - name: Install pinned actionlint
         run: |
+          python -m pip install --disable-pip-version-check uv==0.8.15
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.9
           echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
       - name: Run the canonical fast gate
@@ -41,14 +42,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "${BASE_SHA}" in
-            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-            *) echo "Invalid pull request base SHA" >&2; exit 1 ;;
-          esac
-          case "${HEAD_SHA}" in
-            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-            *) echo "Invalid pull request head SHA" >&2; exit 1 ;;
-          esac
+          if ! [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid pull request base SHA" >&2
+            exit 1
+          fi
+          if ! [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid pull request head SHA" >&2
+            exit 1
+          fi
           git cat-file -e "${BASE_SHA}^{commit}"
           git cat-file -e "${HEAD_SHA}^{commit}"
           CHECKED_OUT_SHA="$(git rev-parse HEAD)"

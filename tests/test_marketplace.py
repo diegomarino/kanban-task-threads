@@ -135,6 +135,7 @@ def test_pr_validation_pins_its_actions_and_keeps_read_only_permissions():
     assert "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97" in workflow
     assert "github.com/rhysd/actionlint/cmd/actionlint@v1.7.9" in workflow
     assert 'echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"' in workflow
+    assert "python -m pip install --disable-pip-version-check uv==0.8.15" in workflow
 
     external_actions = re.findall(r"^\s+uses: ([^./][^@]+)@([^\s#]+)", workflow, re.MULTILINE)
     assert external_actions

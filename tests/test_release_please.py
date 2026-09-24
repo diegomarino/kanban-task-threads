@@ -1,7 +1,9 @@
 import json
+import os
 import re
 import subprocess
 import sys
+import textwrap
 import tomllib
 from pathlib import Path
 
@@ -33,15 +35,49 @@ def _job_permissions(workflow: str, job: str) -> dict[str, str]:
     return dict(re.findall(r"(?m)^      ([a-z-]+): (read|write|none)\s*$", match.group("body")))
 
 
-def _integration_surface_changed(paths: list[str]) -> bool:
-    integration_surfaces = {
-        "__init__.py",
-        "plugin.yaml",
-        "kanban_task_threads/runtime.py",
-        "scripts/check_startup.py",
-        ".github/workflows/ci.yml",
-    }
-    return bool(integration_surfaces.intersection(paths))
+def _integration_classifier() -> str:
+    workflow = (ROOT / ".github/workflows/pr-validation.yml").read_text()
+    match = re.search(
+        r"(?ms)^      - name: Classify integration-sensitive changes\n.*?^        run: \|\n"
+        r"(?P<script>(?:^          [^\n]*\n)+?)(?=^      - name:|^        if:|\Z)",
+        workflow,
+    )
+    assert match is not None, "missing integration classifier step"
+    return textwrap.dedent(match.group("script"))
+
+
+def _commit(repo: Path, relative_path: str, content: str, message: str) -> str:
+    path = repo / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    subprocess.run(["git", "add", relative_path], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", message], cwd=repo, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _history_with_change(tmp_path: Path, relative_path: str) -> tuple[Path, str, str]:
+    repo = tmp_path / "repository"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Workflow tests"], cwd=repo, check=True)
+    base = _commit(repo, "README.md", "base\n", "base")
+    head = _commit(repo, relative_path, "changed\n", "change")
+    return repo, base, head
+
+
+def _run_integration_classifier(repo: Path, base: str, head: str) -> subprocess.CompletedProcess[str]:
+    output = repo / "github-output"
+    environment = os.environ | {"BASE_SHA": base, "HEAD_SHA": head, "GITHUB_OUTPUT": str(output)}
+    return subprocess.run(
+        ["bash", "-c", _integration_classifier()],
+        cwd=repo,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _public_versions(root: Path) -> dict[str, list[str]]:
@@ -136,10 +172,32 @@ def test_pr_validation_classifies_integration_surfaces_from_exact_base_and_head(
     assert 'if [ "${CHECKED_OUT_SHA}" != "${HEAD_SHA}" ]; then' in changes
 
 
-def test_integration_change_classification_includes_workflow_only_changes():
-    assert _integration_surface_changed([".github/workflows/ci.yml"])
-    assert _integration_surface_changed(["README.md", "plugin.yaml"])
-    assert not _integration_surface_changed(["README.md", "docs/testing.md"])
+def test_integration_classifier_marks_workflow_only_changes(tmp_path: Path):
+    repo, base, head = _history_with_change(tmp_path, ".github/workflows/ci.yml")
+
+    result = _run_integration_classifier(repo, base, head)
+
+    assert result.returncode == 0, result.stderr
+    assert (repo / "github-output").read_text() == "integration_changed=true\n"
+
+
+def test_integration_classifier_skips_docs_only_changes(tmp_path: Path):
+    repo, base, head = _history_with_change(tmp_path, "docs/testing.md")
+
+    result = _run_integration_classifier(repo, base, head)
+
+    assert result.returncode == 0, result.stderr
+    assert (repo / "github-output").read_text() == "integration_changed=false\n"
+
+
+def test_integration_classifier_fails_closed_for_missing_or_mismatched_pull_request_shas(tmp_path: Path):
+    repo, base, head = _history_with_change(tmp_path, "plugin.yaml")
+
+    missing_base = _run_integration_classifier(repo, "0" * 40, head)
+    mismatched_head = _run_integration_classifier(repo, base, base)
+
+    assert missing_base.returncode != 0
+    assert mismatched_head.returncode != 0
 
 
 def test_release_waits_for_every_validation_job_and_exports_release_identity():
