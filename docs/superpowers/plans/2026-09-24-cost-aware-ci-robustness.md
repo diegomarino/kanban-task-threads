@@ -458,9 +458,12 @@ The target is one expensive gate per distinct candidate, with approximately 80% 
 
 
   def test_all_version_surfaces_must_match():
-      assert verify_release.require_one_version(
-          {"manifest": "0.5.0", "plugin": "0.5.0", "project": "0.5.0", "lock": "0.5.0"}
-      ) == "0.5.0"
+      assert (
+          verify_release.require_one_version(
+              {"manifest": "0.5.0", "plugin": "0.5.0", "project": "0.5.0", "lock": "0.5.0"}
+          )
+          == "0.5.0"
+      )
   ```
 
 - [ ] **Step 2: Run the focused tests and confirm RED**
