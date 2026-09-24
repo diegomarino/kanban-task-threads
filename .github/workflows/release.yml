@@ -48,7 +48,7 @@ jobs:
           if python3 scripts/ci/verify_release.py release-only --paths-file changed-paths.txt; then
             VERSION="$(python3 scripts/ci/verify_release.py versions --json-file versions.json)"
             grep -F "## [${VERSION}]" CHANGELOG.md >/dev/null
-            gh api "repos/${REPOSITORY}/commits/${SHA}/pulls" --paginate --slurp | jq '[.[][] | select(.merged_at != null and .base.ref == "main" and .head.repo.full_name == $repository and .head.ref == "release-please--branches--main" and .user.login == "github-actions[bot]")] | length' --arg repository "${REPOSITORY}" > release-pr-count.txt
+            gh api "repos/${REPOSITORY}/commits/${SHA}/pulls" --paginate --slurp | jq '[.[][] | select(.merged_at != null and .merge_commit_sha == $merge and .base.ref == "main" and .head.repo.full_name == $repository and .head.ref == "release-please--branches--main" and .user.login == "github-actions[bot]")] | length' --arg merge "${SHA}" --arg repository "${REPOSITORY}" > release-pr-count.txt
             RELEASE_PR_COUNT="$(cat release-pr-count.txt)"
             test "${RELEASE_PR_COUNT}" = 1
             exit 0

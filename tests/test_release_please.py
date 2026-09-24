@@ -255,6 +255,7 @@ def test_release_stages_are_provenance_only_and_release_pr_is_allowlisted():
     assert "--expected-first \"${BEFORE_SHA}\"" in workflow
     assert '.head.ref == "release-please--branches--main"' in workflow
     assert '.user.login == "github-actions[bot]"' in workflow
+    assert workflow.count('.merge_commit_sha == $merge') == 2
     assert 'test "${RELEASE_PR_COUNT}" = 1' in workflow
     assert '.head.ref == "pre-release"' in workflow
     assert '.head.sha == $candidate' in workflow
