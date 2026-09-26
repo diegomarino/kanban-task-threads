@@ -190,7 +190,7 @@ def _build_consumer(ctx, route: "BoardRoute | None" = None):
             # context: this kick cannot see profile secrets, but a later kick
             # from a task hook can. Not a config verdict.
             raise RetryableStartup(
-                f"{_SECRET_WEBHOOK} is not in the environment and this kick's "
+                f"{route.webhook_secret} is not available for board {board!r} and this kick's "
                 "context carries no profile secret scope; waiting for one that does"
             )
         logger.warning(

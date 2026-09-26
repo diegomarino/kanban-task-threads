@@ -67,6 +67,18 @@ def test_no_scope_and_no_secret_is_retryable(entry):
         module._build_consumer(FakeCtx())
 
 
+def test_unscoped_explicit_route_names_its_board_and_secret(entry):
+    module = entry({}, scope_present=False)
+
+    with pytest.raises(retryable_of(module)) as raised:
+        module._build_consumer(FakeCtx(), BoardRoute("fleet", "FLEET_WEBHOOK"))
+
+    message = str(raised.value)
+    assert "fleet" in message
+    assert "FLEET_WEBHOOK" in message
+    assert "KANBAN_TASK_THREADS_WEBHOOK_URL" not in message
+
+
 def test_scope_present_without_secret_is_a_config_verdict(entry):
     module = entry({}, scope_present=True)
     assert module._build_consumer(FakeCtx()) is None
