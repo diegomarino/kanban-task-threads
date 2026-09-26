@@ -100,6 +100,8 @@ def _parse_routes(argv: list[str], repo: pathlib.Path, env: dict[str, str]) -> l
                 webhook_url=webhook_url,
             )
         )
+    if len({route.board_db for route in routes}) != len(routes):
+        raise ProbeError("live-multi-board: duplicate board database")
     return routes
 
 
@@ -189,34 +191,34 @@ def main(
         secrets.append(bot_token)
     consumers: list[tuple[ProbeRoute, object, object]] = []
     try:
-        for route in routes:
-            state = state_store_cls(repo / STATE_PATH)
-            try:
-                transport = transport_cls(
-                    http,
-                    route.webhook_url,
-                    bot_token=bot_token,
-                    forum_channel_id=route.channel_id,
-                )
-                consumer = consumer_cls(
-                    route.board_db,
-                    state,
-                    transport,
-                    board=route.board,
-                    holder=f"live-multi-board-{route.board}",
-                    destination=f"discord:webhook:{route.webhook_id}@{route.channel_id}",
-                    guild_id=route.guild_id,
-                )
-            except Exception:
-                state.close()
-                raise
-            consumers.append((route, consumer, state))
-    except Exception:
-        print("ERROR: consumer build failed", file=stdout)
-        return 2
+        try:
+            for route in routes:
+                state = state_store_cls(repo / STATE_PATH)
+                try:
+                    transport = transport_cls(
+                        http,
+                        route.webhook_url,
+                        bot_token=bot_token,
+                        forum_channel_id=route.channel_id,
+                    )
+                    consumer = consumer_cls(
+                        route.board_db,
+                        state,
+                        transport,
+                        board=route.board,
+                        holder=f"live-multi-board-{route.board}",
+                        destination=f"discord:webhook:{route.webhook_id}@{route.channel_id}",
+                        guild_id=route.guild_id,
+                    )
+                except Exception:
+                    state.close()
+                    raise
+                consumers.append((route, consumer, state))
+        except Exception:
+            print("ERROR: consumer build failed", file=stdout)
+            return 2
 
-    failed = False
-    try:
+        failed = False
         for route, consumer, state in consumers:
             try:
                 report = consumer.run_once()

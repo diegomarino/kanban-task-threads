@@ -139,6 +139,27 @@ def test_probe_rejects_duplicate_boards_and_secret_names_before_preflight(tmp_pa
     assert "duplicate" in output.getvalue()
 
 
+def test_probe_rejects_distinct_board_slugs_for_one_physical_board_before_preflight(tmp_path):
+    """Would fail if aliases let two consumers publish from one SQLite event stream."""
+    probe = load_probe()
+    repo, boards = make_repo(tmp_path)
+    output = io.StringIO()
+    http = FakeHttp()
+
+    assert (
+        probe.main(
+            ["fleet", str(boards[0]), "FLEET_WEBHOOK", "web", str(boards[0]), "WEB_WEBHOOK"],
+            repo=repo,
+            http=http,
+            stdout=output,
+        )
+        == 2
+    )
+
+    assert http.calls == []
+    assert "duplicate board database" in output.getvalue()
+
+
 def test_probe_rejects_missing_named_secret_without_exposing_env_values(tmp_path):
     """Would fail if an absent route secret reached transport construction or output."""
     probe = load_probe()
@@ -224,3 +245,97 @@ def test_probe_closes_both_consumers_and_runs_sibling_after_pass_failure(tmp_pat
     assert [consumer.board for consumer in constructed] == ["fleet", "web"]
     assert all(consumer.closed for consumer in constructed)
     assert "secret-fleet" not in output.getvalue()
+
+
+def test_probe_closes_constructed_consumer_and_state_when_second_build_fails(tmp_path):
+    """Would fail if a later constructor error bypassed cleanup for the first route."""
+    probe = load_probe()
+    repo, boards = make_repo(tmp_path)
+    output = io.StringIO()
+    states = []
+    consumers = []
+
+    class StubState:
+        def __init__(self, _path):
+            self.closed = False
+            states.append(self)
+
+        def close(self):
+            self.closed = True
+
+    class StubConsumer:
+        def __init__(self, _board_db, state, _transport, *, board, **_kwargs):
+            if board == "web":
+                raise RuntimeError("https://discord.test/api/webhooks/web/secret-web")
+            self.state = state
+            self.closed = False
+            consumers.append(self)
+
+        def close(self):
+            self.closed = True
+            self.state.close()
+
+    assert (
+        probe.main(
+            argv(boards),
+            repo=repo,
+            http=FakeHttp(),
+            consumer_cls=StubConsumer,
+            state_store_cls=StubState,
+            stdout=output,
+        )
+        == 2
+    )
+
+    assert len(consumers) == 1
+    assert consumers[0].closed is True
+    assert all(state.closed for state in states)
+    assert "secret-web" not in output.getvalue()
+
+
+def test_probe_redacts_report_errors_and_warnings_but_keeps_board_context(tmp_path):
+    """Would fail if consumer-reported messages could disclose webhook or bot credentials."""
+    probe = load_probe()
+    repo, boards = make_repo(tmp_path, bot_token=True)
+    output = io.StringIO()
+
+    class StubConsumer:
+        def __init__(self, *_args, board, **_kwargs):
+            self.board = board
+
+        def run_once(self):
+            return type(
+                "Report",
+                (),
+                {
+                    "opened": [],
+                    "replied": 0,
+                    "edited": [],
+                    "errors": [
+                        "webhook https://discord.test/api/webhooks/fleet/secret-fleet "
+                        "bot shared-test-bot-token"
+                    ],
+                    "warnings": [
+                        "retry https://discord.test/api/webhooks/web/secret-web "
+                        "bot shared-test-bot-token"
+                    ],
+                },
+            )()
+
+        def close(self):
+            pass
+
+    assert (
+        probe.main(
+            argv(boards), repo=repo, http=FakeHttp(), consumer_cls=StubConsumer, stdout=output
+        )
+        == 1
+    )
+
+    rendered = output.getvalue()
+    assert "ERROR board=fleet:" in rendered
+    assert "WARNING board=web:" in rendered
+    assert "https://discord.test" not in rendered
+    assert "secret-fleet" not in rendered
+    assert "secret-web" not in rendered
+    assert "shared-test-bot-token" not in rendered
