@@ -117,6 +117,19 @@ the two named values from `.env.local`, preflights both webhooks, rejects a
 shared discovered forum, then runs exactly one pass for each board with two
 independent consumers sharing only `.sandbox/live-multi-board-state.db`.
 
+For a two-board probe, the repository-root `.env.local` is ignored by Git and
+exists only for local development and live probes. It must contain only
+disposable test-forum credentials, never production credentials:
+
+```dotenv
+FLEET_WEBHOOK=<disposable-fleet-forum-webhook>
+WEB_WEBHOOK=<disposable-web-forum-webhook>
+KANBAN_TASK_THREADS_BOT_TOKEN=<optional-shared-test-bot-token>
+```
+
+Installed production operation resolves these named secrets from the selected
+publisher profile's secret scope, not the plugin-local `.env.local`.
+
 This probe can create forum posts, edit cards, send replies, and prepare forum
 status tags when the optional shared `KANBAN_TASK_THREADS_BOT_TOKEN` is set.
 Use two disposable forums and webhook credentials, never routine or production
