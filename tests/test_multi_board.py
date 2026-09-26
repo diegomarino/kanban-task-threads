@@ -73,6 +73,17 @@ def rows_for(state_path, boards):
         store.close()
 
 
+def routes_reached_event(state_path, boards, event_id):
+    store = StateStore(state_path)
+    try:
+        return all(
+            store.get_post(board, "t_same") is not None and store.get_cursor(board) == event_id
+            for board in boards
+        )
+    finally:
+        store.close()
+
+
 def make_consumer(board_path, state_path, board, transport, destination):
     return Consumer(
         board_path,
@@ -214,7 +225,7 @@ def test_two_routes_publish_to_distinct_forums_through_entry_runtime(tmp_path, m
     )
     module.register(ctx)
     try:
-        assert wait_for(lambda: all(rows_for(state_path, ("fleet", "web")).values()))
+        assert wait_for(lambda: routes_reached_event(state_path, ("fleet", "web"), 2))
         group = registered_group(ctx)
         assert len(group._runtimes) == 2
         assert all(runtime._built for runtime in group._runtimes)
