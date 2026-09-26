@@ -2,19 +2,20 @@
 
 import importlib
 import json
+import logging
 import pathlib
 import subprocess
 import sys
+import threading
+import time
 import types
 
 import pytest
 from conftest import FakeHttp, FakeTransport, add_event, insert_task, make_board
-from test_register import FakeCtx, load_entry_point
+from test_register import ConfiguredCtx, load_entry_point, plugin_threads
 
 from kanban_task_threads.consumer import Consumer
-from kanban_task_threads.routes import BoardRoute
 from kanban_task_threads.store import StateStore, state_db_path
-from kanban_task_threads.transport import ForumTagSetupError
 
 NOW = 1_789_700_100
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -24,6 +25,52 @@ def add_lifecycle(board, task_id="t_same"):
     insert_task(board, task_id, status="done")
     add_event(board, task_id, "created", {"status": "ready"})
     add_event(board, task_id, "commented", {"author": "agent", "len": 3})
+
+
+def assert_per_board_plugin_state(state_path, boards, legacy_bytes=None):
+    assert state_path.exists()
+    for board in boards:
+        legacy_path = state_path.parent / f"{board}.db"
+        if legacy_bytes is None:
+            assert not legacy_path.exists()
+        else:
+            assert legacy_path.read_bytes() == legacy_bytes[board]
+
+
+def seed_legacy_per_board_state(state_path, boards):
+    result = {}
+    for board in boards:
+        legacy_path = state_path.parent / f"{board}.db"
+        legacy = StateStore(legacy_path)
+        legacy.begin_create(board, "t_same", now=1)
+        legacy.complete_create(
+            board,
+            "t_same",
+            thread_id=f"legacy-{board}-thread",
+            message_id=f"legacy-{board}-message",
+            destination=f"legacy:{board}",
+        )
+        assert legacy.advance_cursor(board, old=0, new=91) is True
+        legacy.close()
+        result[board] = legacy_path.read_bytes()
+    return result
+
+
+def wait_for(predicate, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+def rows_for(state_path, boards):
+    store = StateStore(state_path)
+    try:
+        return {board: store.get_post(board, "t_same") for board in boards}
+    finally:
+        store.close()
 
 
 def make_consumer(board_path, state_path, board, transport, destination):
@@ -37,76 +84,66 @@ def make_consumer(board_path, state_path, board, transport, destination):
     )
 
 
-def assert_no_per_board_plugin_state(state_path, boards):
-    assert state_path.exists()
-    assert all(not (state_path.parent / f"{board}.db").exists() for board in boards)
+class RoutedHttp(FakeHttp):
+    """Thread-safe fake Discord boundary keyed by webhook URL and forum id."""
 
+    def __init__(self, webhooks, failures=()):
+        super().__init__()
+        self._webhooks = webhooks
+        self._failures = frozenset(failures)
+        self._lock = threading.Lock()
+        self._message_number = 0
 
-def test_two_routes_publish_to_distinct_forums(tmp_path):
-    state_path = state_db_path(tmp_path)
-    fleet_board, web_board = make_board(tmp_path / "fleet.db"), make_board(tmp_path / "web.db")
-    add_lifecycle(fleet_board)
-    add_lifecycle(web_board)
-    fleet_transport, web_transport = FakeTransport(), FakeTransport()
-    fleet = make_consumer(
-        tmp_path / "fleet.db", state_path, "fleet", fleet_transport, "discord:webhook:fleet@10"
-    )
-    web = make_consumer(
-        tmp_path / "web.db", state_path, "web", web_transport, "discord:webhook:web@20"
-    )
-
-    assert fleet.run_once(now=NOW).opened == ["t_same"]
-    assert web.run_once(now=NOW).opened == ["t_same"]
-
-    fleet_post = fleet._store.get_post("fleet", "t_same")
-    web_post = web._store.get_post("web", "t_same")
-    assert fleet_transport.ops().count("open_thread") == 1
-    assert web_transport.ops().count("open_thread") == 1
-    assert fleet_transport.ops().count("append") == 1
-    assert web_transport.ops().count("append") == 1
-    assert fleet_post["destination"] == "discord:webhook:fleet@10"
-    assert web_post["destination"] == "discord:webhook:web@20"
-    assert_no_per_board_plugin_state(state_path, ("fleet", "web"))
-
-    fleet.close()
-    web.close()
-    fleet_board.close()
-    web_board.close()
-
-
-def test_restart_resumes_both_routes(tmp_path):
-    state_path = state_db_path(tmp_path)
-    fleet_board, web_board = make_board(tmp_path / "fleet.db"), make_board(tmp_path / "web.db")
-    add_lifecycle(fleet_board)
-    add_lifecycle(web_board)
-    first_fleet, first_web = FakeTransport(), FakeTransport()
-    fleet = make_consumer(tmp_path / "fleet.db", state_path, "fleet", first_fleet, "fleet-forum")
-    web = make_consumer(tmp_path / "web.db", state_path, "web", first_web, "web-forum")
-    fleet.run_once(now=NOW)
-    web.run_once(now=NOW)
-    fleet_thread = fleet._store.get_post("fleet", "t_same")["thread_id"]
-    web_thread = web._store.get_post("web", "t_same")["thread_id"]
-    fleet.close()
-    web.close()
-
-    add_event(fleet_board, "t_same", "completed", {"summary": "fleet done"})
-    add_event(web_board, "t_same", "completed", {"summary": "web done"})
-    resumed_fleet, resumed_web = FakeTransport(), FakeTransport()
-    fleet = make_consumer(tmp_path / "fleet.db", state_path, "fleet", resumed_fleet, "fleet-forum")
-    web = make_consumer(tmp_path / "web.db", state_path, "web", resumed_web, "web-forum")
-
-    fleet.run_once(now=NOW + 10)
-    web.run_once(now=NOW + 10)
-
-    assert resumed_fleet.ops("open_thread") == resumed_web.ops("open_thread") == []
-    assert resumed_fleet.ops("append")[0][1].thread_id == fleet_thread
-    assert resumed_web.ops("append")[0][1].thread_id == web_thread
-    assert_no_per_board_plugin_state(state_path, ("fleet", "web"))
-
-    fleet.close()
-    web.close()
-    fleet_board.close()
-    web_board.close()
+    def __call__(self, method, url, body, headers=None):
+        with self._lock:
+            self.calls.append((method, url, body))
+            self.headers_seen.append(headers or {})
+            route = next(
+                (name for name, webhook in self._webhooks.items() if url.startswith(webhook)), None
+            )
+            if route is not None:
+                if method == "GET":
+                    if route == "failed" and "rejected_webhook" in self._failures:
+                        return 401, {"message": "Invalid Webhook Token"}
+                    if route == "failed" and "transient_preflight" in self._failures:
+                        return 502, {"message": "bad gateway"}
+                    return 200, {
+                        "id": f"{route}-webhook",
+                        "channel_id": f"{route}-forum",
+                        "guild_id": f"{route}-guild",
+                        "name": route,
+                    }
+                self._message_number += 1
+                return 200, {
+                    "id": f"{route}-message-{self._message_number}",
+                    "channel_id": f"{route}-thread-{self._message_number}",
+                }
+            if method == "GET" and url.endswith("/failed-forum"):
+                return 403, {"message": "Missing Access"}
+            if method == "GET" and url.endswith("-forum"):
+                return 200, {
+                    "flags": 0,
+                    "available_tags": [
+                        {"id": f"tag-{index}", "name": name}
+                        for index, name in enumerate(
+                            (
+                                "triage",
+                                "todo",
+                                "scheduled",
+                                "ready",
+                                "running",
+                                "blocked",
+                                "needs-human",
+                                "review",
+                                "done",
+                                "archived",
+                                "failed",
+                            ),
+                            start=1,
+                        )
+                    ],
+                }
+            return 200, {}
 
 
 def _entry(monkeypatch, tmp_path, secrets, http):
@@ -131,64 +168,204 @@ def _entry(monkeypatch, tmp_path, secrets, http):
         monkeypatch.setitem(sys.modules, name, fake)
     transport = importlib.import_module("ktt_entry.kanban_task_threads.transport")
     monkeypatch.setattr(transport, "urllib_http", http)
+    monkeypatch.setattr(module, "_refresh_profile_context", lambda context, **_: context.copy())
     return module
 
 
+def make_runtime_entry(monkeypatch, tmp_path, *, failure=()):
+    webhooks = {
+        "fleet": "https://discord.com/api/webhooks/fleet/token",
+        "web": "https://discord.com/api/webhooks/web/token",
+        "failed": "https://discord.com/api/webhooks/failed/token",
+        "healthy": "https://discord.com/api/webhooks/healthy/token",
+    }
+    secrets = {
+        "FLEET_WEBHOOK": webhooks["fleet"],
+        "WEB_WEBHOOK": webhooks["web"],
+        "HEALTHY_WEBHOOK": webhooks["healthy"],
+    }
+    if "missing_secret" not in failure:
+        secrets["FAILED_WEBHOOK"] = webhooks["failed"]
+    if "forum_permission" in failure:
+        secrets["KANBAN_TASK_THREADS_BOT_TOKEN"] = "test-bot-token"
+    return _entry(monkeypatch, tmp_path, secrets, RoutedHttp(webhooks, failure)), webhooks
+
+
+def registered_group(ctx):
+    return ctx.unload_callbacks[-1].__self__
+
+
+def test_two_routes_publish_to_distinct_forums_through_entry_runtime(tmp_path, monkeypatch):
+    state_path = state_db_path(tmp_path)
+    fleet_board, web_board = make_board(tmp_path / "fleet.db"), make_board(tmp_path / "web.db")
+    add_lifecycle(fleet_board)
+    add_lifecycle(web_board)
+    legacy_bytes = seed_legacy_per_board_state(state_path, ("fleet", "web"))
+    module, webhooks = make_runtime_entry(monkeypatch, tmp_path)
+    ctx = ConfiguredCtx(
+        "publisher",
+        {
+            "poll_seconds": 0.01,
+            "routes": [
+                {"selector": {"board": "fleet"}, "webhook_secret": "FLEET_WEBHOOK"},
+                {"selector": {"board": "web"}, "webhook_secret": "WEB_WEBHOOK"},
+            ],
+        },
+    )
+    module.register(ctx)
+    try:
+        assert wait_for(lambda: all(rows_for(state_path, ("fleet", "web")).values()))
+        group = registered_group(ctx)
+        assert len(group._runtimes) == 2
+        assert all(runtime._built for runtime in group._runtimes)
+        store = StateStore(state_path)
+        fleet_post, web_post = store.get_post("fleet", "t_same"), store.get_post("web", "t_same")
+        assert fleet_post["destination"] == "discord:webhook:fleet-webhook@fleet-forum"
+        assert web_post["destination"] == "discord:webhook:web-webhook@web-forum"
+        assert fleet_post["thread_id"] != "legacy-fleet-thread"
+        assert web_post["thread_id"] != "legacy-web-thread"
+        assert store.get_cursor("fleet") == store.get_cursor("web") == 2
+        store.close()
+        http = importlib.import_module("ktt_entry.kanban_task_threads.transport").urllib_http
+        post_urls = [url for method, url, _ in http.calls if method == "POST"]
+        assert any(url.startswith(webhooks["fleet"]) for url in post_urls)
+        assert any(url.startswith(webhooks["web"]) for url in post_urls)
+        assert_per_board_plugin_state(state_path, ("fleet", "web"), legacy_bytes)
+    finally:
+        ctx.unload_callbacks[-1]()
+        assert wait_for(lambda: not plugin_threads())
+        fleet_board.close()
+        web_board.close()
+
+
+def test_restart_resumes_both_routes_through_entry_and_runtime_group(tmp_path, monkeypatch):
+    state_path = state_db_path(tmp_path)
+    fleet_board, web_board = make_board(tmp_path / "fleet.db"), make_board(tmp_path / "web.db")
+    add_lifecycle(fleet_board)
+    add_lifecycle(web_board)
+    legacy_bytes = seed_legacy_per_board_state(state_path, ("fleet", "web"))
+    module, webhooks = make_runtime_entry(monkeypatch, tmp_path)
+    ctx = ConfiguredCtx(
+        "publisher",
+        {
+            "poll_seconds": 0.01,
+            "routes": [
+                {"selector": {"board": "fleet"}, "webhook_secret": "FLEET_WEBHOOK"},
+                {"selector": {"board": "web"}, "webhook_secret": "WEB_WEBHOOK"},
+            ],
+        },
+    )
+    module.register(ctx)
+    try:
+        assert wait_for(lambda: all(rows_for(state_path, ("fleet", "web")).values()))
+        store = StateStore(state_path)
+        first_threads = {
+            board: store.get_post(board, "t_same")["thread_id"] for board in ("fleet", "web")
+        }
+        store.close()
+        ctx.unload_callbacks[-1]()
+        assert wait_for(lambda: not plugin_threads())
+
+        add_event(fleet_board, "t_same", "completed", {"summary": "fleet done"})
+        add_event(web_board, "t_same", "completed", {"summary": "web done"})
+        module.register(ctx)
+        assert wait_for(
+            lambda: all(
+                row["last_event_id"] == 3 for row in rows_for(state_path, ("fleet", "web")).values()
+            )
+        )
+        store = StateStore(state_path)
+        resumed_threads = {
+            board: store.get_post(board, "t_same")["thread_id"] for board in ("fleet", "web")
+        }
+        assert resumed_threads == first_threads
+        assert store.get_cursor("fleet") == store.get_cursor("web") == 3
+        store.close()
+        http = importlib.import_module("ktt_entry.kanban_task_threads.transport").urllib_http
+        open_urls = [
+            url for method, url, _ in http.calls if method == "POST" and "thread_id" not in url
+        ]
+        assert len(open_urls) == 2
+        assert {url.split("?", 1)[0] for url in open_urls} == {webhooks["fleet"], webhooks["web"]}
+        assert_per_board_plugin_state(state_path, ("fleet", "web"), legacy_bytes)
+    finally:
+        ctx.unload_callbacks[-1]()
+        assert wait_for(lambda: not plugin_threads())
+        fleet_board.close()
+        web_board.close()
+
+
 @pytest.mark.parametrize(
-    ("failure", "expected"),
+    "failure",
     [
-        ("missing_secret", "inactive"),
-        ("rejected_webhook", "inactive"),
-        ("transient_preflight", "retryable"),
-        ("forum_permission", "permanent"),
+        "missing_secret",
+        "rejected_webhook",
+        "transient_preflight",
+        "forum_permission",
     ],
 )
-def test_failed_route_does_not_block_healthy_route(tmp_path, monkeypatch, failure, expected):
+def test_failed_route_does_not_block_healthy_route_in_one_runtime_group(
+    tmp_path, monkeypatch, caplog, failure
+):
+    caplog.set_level(logging.DEBUG)
     healthy_board = make_board(tmp_path / "healthy.db")
-    add_lifecycle(healthy_board, "t_healthy")
+    failed_board = make_board(tmp_path / "failed.db")
+    add_lifecycle(healthy_board)
+    add_lifecycle(failed_board)
     state_path = state_db_path(tmp_path)
-    healthy_transport = FakeTransport()
-    healthy = make_consumer(
-        tmp_path / "healthy.db", state_path, "healthy", healthy_transport, "healthy-forum"
+    module, webhooks = make_runtime_entry(monkeypatch, tmp_path, failure=(failure,))
+    ctx = ConfiguredCtx(
+        "publisher",
+        {
+            "poll_seconds": 0.01,
+            "routes": [
+                {"selector": {"board": "failed"}, "webhook_secret": "FAILED_WEBHOOK"},
+                {"selector": {"board": "healthy"}, "webhook_secret": "HEALTHY_WEBHOOK"},
+            ],
+        },
     )
-
-    if failure == "forum_permission":
-        failed_board = make_board(tmp_path / "failed.db")
-        add_lifecycle(failed_board, "t_failed")
-        failed_transport = FakeTransport({"tags"})
-        failed_transport.record_prepare = True
-        failed_transport.queue_error("prepare_forum", ForumTagSetupError("grant Manage Channels"))
-        failed = make_consumer(
-            tmp_path / "failed.db", state_path, "failed", failed_transport, "failed-forum"
+    module.register(ctx)
+    try:
+        assert wait_for(lambda: rows_for(state_path, ("healthy",))["healthy"] is not None)
+        group = registered_group(ctx)
+        failed_runtime, healthy_runtime = group._runtimes
+        assert healthy_runtime._built is True
+        http = importlib.import_module("ktt_entry.kanban_task_threads.transport").urllib_http
+        assert any(
+            method == "POST" and url.startswith(webhooks["healthy"])
+            for method, url, _ in http.calls
         )
-        failure_result = failed.run_once(now=NOW)
-        assert failure_result.errors == ["Discord forum setup failed: grant Manage Channels"]
-        failed.close()
-        failed_board.close()
-    else:
-        http = FakeHttp()
-        secrets = {"HEALTHY_WEBHOOK": "https://discord.com/api/webhooks/healthy/token"}
-        if failure == "rejected_webhook":
-            secrets["FAILED_WEBHOOK"] = "https://discord.com/api/webhooks/failed/token"
-            http.queue(401, {"message": "Invalid Webhook Token"})
-        elif failure == "transient_preflight":
-            secrets["FAILED_WEBHOOK"] = "https://discord.com/api/webhooks/failed/token"
-            http.queue(502, {"message": "bad gateway"})
-        module = _entry(monkeypatch, tmp_path, secrets, http)
-        if expected == "retryable":
-            entry_runtime = importlib.import_module("ktt_entry.kanban_task_threads.runtime")
-            with pytest.raises(entry_runtime.RetryableStartup):
-                module._build_consumer(FakeCtx(), BoardRoute("failed", "FAILED_WEBHOOK"))
-        else:
-            assert module._build_consumer(FakeCtx(), BoardRoute("failed", "FAILED_WEBHOOK")) is None
 
-    healthy_report = healthy.run_once(now=NOW)
-    assert healthy_report.opened == ["t_healthy"]
-    assert healthy_transport.ops().count("open_thread") == 1
-    assert healthy._store.get_post("healthy", "t_healthy")["state"] == "live"
-    assert_no_per_board_plugin_state(state_path, ("healthy", "failed"))
-    healthy.close()
-    healthy_board.close()
+        if failure in {"missing_secret", "rejected_webhook"}:
+            assert wait_for(lambda: failed_runtime._disabled)
+            assert failed_runtime._disabled is True
+            assert failed_runtime._built is False
+            expected_log = (
+                "webhook is not set for board 'failed'"
+                if failure == "missing_secret"
+                else "Discord rejected the webhook for board 'failed'"
+            )
+            assert any(expected_log in record.message for record in caplog.records)
+        elif failure == "transient_preflight":
+            assert wait_for(
+                lambda: any("startup deferred" in record.message for record in caplog.records)
+            )
+            assert failed_runtime._disabled is False
+            assert failed_runtime._built is False
+        else:
+            assert wait_for(
+                lambda: any("forum setup failed" in record.message for record in caplog.records)
+            )
+            assert failed_runtime._disabled is False
+            assert failed_runtime._built is True
+            assert rows_for(state_path, ("failed",))["failed"] is None
+
+        assert_per_board_plugin_state(state_path, ("healthy", "failed"))
+    finally:
+        ctx.unload_callbacks[-1]()
+        assert wait_for(lambda: not plugin_threads())
+        healthy_board.close()
+        failed_board.close()
 
 
 CONCURRENT_WORKER = """
@@ -278,7 +455,7 @@ def test_concurrent_boards_share_initial_state_file(tmp_path):
     assert store.get_post("fleet", "t_same")["destination"] == "discord:fleet"
     assert store.get_post("web", "t_same")["destination"] == "discord:web"
     store.close()
-    assert_no_per_board_plugin_state(state_path, ("fleet", "web"))
+    assert_per_board_plugin_state(state_path, ("fleet", "web"))
 
 
 def test_changed_route_freezes_existing_destination(tmp_path):
@@ -297,6 +474,6 @@ def test_changed_route_freezes_existing_destination(tmp_path):
     assert moved_transport.calls == []
     assert any("destination changed" in error for error in report.errors)
     assert moved._store.get_post("fleet", "t_same")["destination"] == "forum-A"
-    assert_no_per_board_plugin_state(state_path, ("fleet",))
+    assert_per_board_plugin_state(state_path, ("fleet",))
     moved.close()
     board.close()
