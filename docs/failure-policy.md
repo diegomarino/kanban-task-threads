@@ -81,7 +81,15 @@ rows are kept as compact records, never pruned on "terminal".
 ## The operator's verbs (`kanban_task_threads/reconcile.py`)
 
 Everything the policy defers to a human is operable without hand-written SQL,
-via `scripts/reconcile.py <state.db> …` (in development: `sandbox reconcile`):
+via the shared database path (in development: `sandbox reconcile`):
+
+```bash
+scripts/reconcile.py <kanban_home>/kanban/plugins/kanban-task-threads/threads-state.db attention
+scripts/reconcile.py <kanban_home>/kanban/plugins/kanban-task-threads/threads-state.db rearm <board> <task_id>
+```
+
+`attention` covers all boards; every mutating verb requires the board-qualified
+`<board> <task_id>` arguments:
 
 | Verb | For | Effect |
 |---|---|---|
