@@ -41,7 +41,7 @@ class FileTransport:
         self.n += 1
         return f"{{self.holder}}-m{{self.n}}"
 
-board_db, state_db, log, holder = sys.argv[1:5]
+board_db, state_db, log, holder, board = sys.argv[1:6]
 # start barrier: both workers announce themselves and wait for the other, so
 # the lease contention the docstring claims is actually exercised — without
 # this, a slow runner could serialize the processes and prove nothing
@@ -51,7 +51,7 @@ deadline = time.time() + 10
 while len(list(barrier.glob("ready-*"))) < 2 and time.time() < deadline:
     time.sleep(0.005)
 consumer = Consumer(board_db, StateStore(state_db), FileTransport(log, holder),
-                    board="default", holder=holder)
+                    board=board, holder=holder)
 for _ in range(20):  # keep trying until the batch is drained or done
     report = consumer.run_once()
     if report.acquired and not report.opened and not report.replied:
@@ -82,6 +82,7 @@ def test_two_processes_produce_exactly_one_post(tmp_path):
                 str(tmp_path / "state.db"),
                 str(log),
                 holder,
+                "default",
             ]
         )
         for holder in ("p1", "p2")
@@ -94,3 +95,39 @@ def test_two_processes_produce_exactly_one_post(tmp_path):
     ops = [json.loads(line)["op"] for line in log.read_text().splitlines()]
     assert ops.count("open_thread") == 1, f"duplicate post! ops: {ops}"
     assert ops.count("append") == 2  # commented + completed, exactly once each
+
+
+def test_two_processes_keep_equal_task_ids_isolated_by_board(tmp_path):
+    for board_name in ("fleet", "web"):
+        board = make_board(tmp_path / f"{board_name}.db")
+        insert_task(board, "t_same", status="done")
+        add_event(board, "t_same", "created", {"status": "ready"})
+        add_event(board, "t_same", "commented", {"author": board_name, "len": 3})
+        board.close()
+
+    script = tmp_path / "worker.py"
+    script.write_text(WORKER.format(repo=str(REPO)))
+    log = tmp_path / "ops.jsonl"
+    log.touch()
+    procs = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(script),
+                str(tmp_path / f"{board_name}.db"),
+                str(tmp_path / "state.db"),
+                str(log),
+                board_name,
+                board_name,
+            ]
+        )
+        for board_name in ("fleet", "web")
+    ]
+    for proc in procs:
+        assert proc.wait(timeout=30) == 0
+
+    import json
+
+    ops = [json.loads(line)["op"] for line in log.read_text().splitlines()]
+    assert ops.count("open_thread") == 2
+    assert ops.count("append") == 2
