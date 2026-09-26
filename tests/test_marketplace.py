@@ -59,6 +59,28 @@ def test_manifest_exposes_only_settings_the_runtime_supports():
     assert not re.search(r"^  transport:\n", config_schema, re.MULTILINE)
 
 
+def test_manifest_declares_explicit_routes_without_requiring_the_legacy_secret():
+    text = (ROOT / "plugin.yaml").read_text()
+    config_schema = text.split("config_schema:\n", 1)[1]
+    routes = re.search(r"^  routes:\n(.*?)(?=^  \S|\Z)", config_schema, re.MULTILINE | re.DOTALL)
+    assert routes, "plugin.yaml must declare the explicit routes setting"
+    assert "type: list" in routes[1]
+    assert "default:" not in routes[1], "absent routes must remain distinguishable from []"
+    assert "selector" in routes[1]
+    assert "webhook_secret" in routes[1]
+
+    optional_env = text.split("optional_env:\n", 1)[1].split("provides_hooks:\n", 1)[0]
+    legacy = re.search(
+        r"- name: KANBAN_TASK_THREADS_WEBHOOK_URL\n(.*?)(?=^  - name:|\Z)",
+        optional_env,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert legacy, "the legacy webhook must be optional for explicit routes"
+    assert "only when routes is absent" in legacy[1]
+    assert "secret: true" in legacy[1]
+    assert "KANBAN_TASK_THREADS_WEBHOOK_URL" not in text.split("optional_env:\n", 1)[0]
+
+
 def test_official_install_uses_the_flat_plugin_identifier():
     readme = (ROOT / "README.md").read_text()
     configuration = (ROOT / "docs" / "configuration.md").read_text()
