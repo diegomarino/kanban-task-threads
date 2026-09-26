@@ -23,6 +23,12 @@ profile completely inert for this plugin; only exact `ctx.profile_name` match
 may register kicks or start/build the publishing runtime. Pinning deliberately
 trades away automatic cross-profile failover.
 
+A permitted publisher profile may host more than one explicit board route.
+Each route owns its consumer startup, retry loop, and fenced `consume:<board>`
+lease, so a route-local failure does not suppress its siblings. All routes use
+the shared, board-qualified SQLite state from ADR-0005 and compare their own
+destination before publishing.
+
 When the selected runtime has the optional bot capabilities, the consumer
 audits Discord metadata immediately on its first pass and thereafter on an
 in-memory schedule. One audit reads all active guild threads and filters them
@@ -60,6 +66,9 @@ consumption. Timing and level are private process memory only.
 - Webhook-only installations remain complete and perform no metadata audit.
 - The optional bot token may be the selected publisher profile's existing
   Discord bot token; this plugin neither invents nor provisions another bot.
+  It is currently shared by all routes in that profile. This is temporary:
+  per-route bot credentials are not implemented and no delivery behavior is
+  promised for them.
 - The bot's integration-managed Discord role needs forum access,
   `MANAGE_THREADS` (UI: “Manage Threads and Posts”), and
   `READ_MESSAGE_HISTORY` for archived listing. Automatic tag provisioning also
@@ -73,3 +82,7 @@ consumption. Timing and level are private process memory only.
   candidates cannot race full-list `available_tags` replacements or retain IDs
   invalidated by another candidate. A holder that loses the lease during setup
   leaves setup pending; the next attempt re-reads Discord's current tag IDs.
+- `discord_applied_tag_ids` are shared creation settings but Discord tag IDs
+  are forum-local. A route must not reinterpret an ID for a different forum;
+  deployments with different required creation tags use the existing
+  bot-managed tag setup.

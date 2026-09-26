@@ -68,8 +68,9 @@ the command with `--force`; that flag cannot override a `DANGEROUS` verdict.
 Do not disable install-time scanning. Prefer the catalog name and its reviewed,
 pinned commit for normal installations.
 
-Set the secret in your profile's environment (through your secret manager —
-e.g. a 1Password `op://` reference — never a literal in config):
+Set secrets in the publisher profile's environment (through your secret manager
+— e.g. a 1Password `op://` reference — never a literal in config). With no
+`routes` setting, the legacy single-board configuration uses:
 
 ```
 KANBAN_TASK_THREADS_WEBHOOK_URL=https://discord.com/api/webhooks/…/…
@@ -79,16 +80,16 @@ KANBAN_TASK_THREADS_BOT_TOKEN=…        # optional
 Then restart the gateway — a gateway holds its plugin set from startup.
 Confirm with `hermes plugins list` that the source column reads `user`.
 
-The forum channel is never configured: the plugin asks the webhook where it
+The forum channel is never configured: the plugin asks each webhook where it
 posts (`GET` on the webhook returns its `channel_id`). One credential, one
-source of truth.
+source of truth for each route.
 
 **Naming the forum** is yours to do — the plugin discovers channels, it never
 creates or names them. The binding between a board and a forum is the pair
-*(`board` setting, webhook secret)*, not any name. Suggested convention: name
+*(board selector, webhook secret)*, not any name. Suggested convention: name
 the forum after the board's slug (`#tasks-default`, `#tasks-web`), so a human
-reading the channel list can tell which board publishes where. One deployment
-serves one board; point each board's deployment at its own forum's webhook.
+reading the channel list can tell which board publishes where. A single
+publisher profile can serve several boards when it has explicit routes.
 
 > **Managed tags:** with a bot token, the first pass holding the board lease
 > reuses or creates the exact forum tags `🔎 triage`, `📋 todo`, `📅 scheduled`,
@@ -110,7 +111,8 @@ All optional, under `plugins.entries.<id>.settings`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `board` | current board | Which board this instance serves |
+| `board` | current board | Legacy only: which board the absent-`routes` configuration serves |
+| `routes` | absent | Explicit board-to-webhook routes. Absent preserves the legacy `board` plus `KANBAN_TASK_THREADS_WEBHOOK_URL`; `[]` starts no consumers and publishes nothing |
 | `publisher_profile` | empty | Exact `ctx.profile_name` allowed to publish. Empty preserves the public/single-profile default: every loaded profile is a lease candidate and the board lease elects the active publisher. A value pins publication and gives up cross-profile failover |
 | `reply_on` | sensible set | Event kinds that earn a reply in the thread |
 | `include_workspace_path` | `false` | Publish the absolute workspace path on the card (see Privacy) |
@@ -130,6 +132,48 @@ attribute/index traversal is rejected) and fall back to the built-ins on any
 error. What is *not* configurable, by design: which events publish, when the
 card re-renders, idempotency, retry policy, truncation, and
 `allowed_mentions: {"parse": []}` on every call.
+
+### Multiple board routes
+
+`routes` is an explicit, board-only publication map. Each route has exactly one
+destination: a selector containing exactly one board slug and a
+`webhook_secret`, which is the **profile-scoped secret name**, not a webhook
+URL. For example, one publisher profile can publish `fleet` and `web` to two
+forums:
+
+```yaml
+plugins:
+  entries:
+    kanban-task-threads:
+      settings:
+        publisher_profile: publisher
+        routes:
+          - selector: {board: fleet}
+            webhook_secret: FLEET_WEBHOOK
+          - selector: {board: web}
+            webhook_secret: WEB_WEBHOOK
+```
+
+Set `FLEET_WEBHOOK` and `WEB_WEBHOOK` in that profile's secret scope. An absent
+`routes` value remains the legacy configuration (the optional `board` setting
+and `KANBAN_TASK_THREADS_WEBHOOK_URL`); an explicit `routes: []` intentionally
+publishes nothing. Duplicate boards, a route with multiple destinations, and
+selectors other than `{board: ...}` are rejected. Project selectors and
+multi-destination publication are not available. Any future routing extension
+must preserve this board-only meaning rather than reinterpreting a board route.
+
+Each route runs an independent consumer and board lease, so a missing secret,
+bad webhook, retry, or other route-local failure does not stop healthy routes.
+`publisher_profile` still selects which profile may host those consumers; an
+empty value keeps the existing lease-candidate behavior.
+
+`KANBAN_TASK_THREADS_BOT_TOKEN` remains one optional, shared token for every
+route in a publisher profile. This is temporary: per-route bot credentials are
+not implemented, and this release makes no delivery promise for such an
+extension. Explicit `discord_applied_tag_ids` are shared creation settings;
+their IDs are forum-local, so do not reuse or reinterpret them across forums.
+If routes need different required creation tags, use the existing bot-managed
+tag setup for those forums.
 
 ### Message avatars
 
@@ -253,8 +297,10 @@ operator.
 - **Replies are at-least-once** across a crash between send and cursor write;
   a rare duplicate reply is possible. Post creation is strictly guarded
   instead — ambiguous outcomes wait for an operator (`reconcile` verbs).
-- One deployment serves **one board** and one forum. Multi-forum routing is
-  deliberately not built (ADR-0010).
+- Explicit routes support **one destination per board** in one publisher
+  profile. Project routing and multi-destination publication are not available.
+- The optional bot token is shared by all routes for now; per-route bot
+  credentials and any delivery semantics for them are not implemented.
 
 This project is not affiliated with or endorsed by Discord Inc. or
 Nous Research.

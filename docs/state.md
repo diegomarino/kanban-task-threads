@@ -19,8 +19,11 @@ posts  (board, task_id PK,
 leases (name PK, holder, expires_at, token)   -- consume:<board>, fenced
 ```
 
-Location: `<kanban root>/kanban/plugins/kanban-task-threads/<board>.db`,
-resolved through `kanban_home()` — the same root the board itself lives under.
+Location: exactly
+`<kanban_home>/kanban/plugins/kanban-task-threads/threads-state.db`, resolved
+through `kanban_home()` — the same root the boards themselves live under. This
+is one shared plugin database, not one file per board. SQLite's normal
+`threads-state.db-wal` and `threads-state.db-shm` sidecars may appear beside it.
 
 ## Why not `ctx.state`
 
@@ -43,14 +46,17 @@ design reviews independently found this):
    another component's file invites migrations and garbage collectors to eat
    your state.
 
-Hence: a file the plugin owns, at board scope, with real SQL transactions —
-the same durability and writer-lock arbitration the board itself relies on.
+Hence: a file the plugin owns, at the shared kanban root, with real SQL
+transactions — the same durability and writer-lock arbitration the board itself
+relies on.
 
 ## The mapping is keyed `(board, task_id)`
 
-Task ids are unique per board, and several boards are supported; one state
-file per board keeps a board's publishing history self-contained (and
-removable) without touching the others.
+Task ids are unique per board, and several boards are supported. The `cursor`
+and `posts` tables are board-qualified, while leases remain named
+`consume:<board>`; each route opens its own SQLite connection to the shared
+database. SQLite coordinates those independent connections with its normal
+locking and WAL behavior.
 
 Each `posts` row also records the **destination** — which webhook and forum
 the post was created through. On every publish the consumer compares it with
@@ -64,6 +70,19 @@ metadata audit refreshes tag/archive hints from bulk Discord reads and from
 fields returned by successful PATCHes. Audit timing and backoff are private
 consumer memory; they add no table, migration, or durable queue (ADR-0014).
 
+## No old-state migration
+
+The plugin does not migrate, import, fall back to, modify, or delete old
+per-board state files such as `<board>.db`. They remain untouched. A new shared
+database therefore cannot recover old Discord associations from those files;
+when it processes existing board history it can create new threads for tasks
+whose prior association existed only in old state. Operators must treat that as
+a deliberate no-migration boundary, not as automatic recovery.
+
+The database grows with the cumulative number of tasks it has seen. There is
+no retention policy, and this routing change introduces neither event-history
+duplication nor a new event-history store.
+
 ## Terminal is not final
 
 `review → running`, `blocked → ready`, `running → ready` on reclaim and
@@ -72,5 +91,6 @@ consumer memory; they add no table, migration, or durable queue (ADR-0014).
 permanently rejected it) are states on the row, not deletions — a reanimated
 task must not silently re-create a post someone removed on purpose.
 
-Uninstalling the plugin leaves the state files behind deliberately: they hold
-the task→post mapping, and the posts themselves are never deleted.
+Uninstalling the plugin leaves the shared state database and its normal SQLite
+sidecars behind deliberately: they hold the task→post mapping, and the posts
+themselves are never deleted.
