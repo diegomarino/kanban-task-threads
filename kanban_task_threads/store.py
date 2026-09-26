@@ -51,9 +51,14 @@ CREATE TABLE IF NOT EXISTS leases (
 """
 
 
+def state_db_path(kanban_root: str | Path) -> Path:
+    """Return the one plugin-owned publication-state database path."""
+    return Path(kanban_root) / "kanban" / "plugins" / "kanban-task-threads" / "threads-state.db"
+
+
 class StateStore:
     """The plugin's durable memory: cursor, task→post mapping, fenced leases.
-    One SQLite file per board; every method is safe to call from any process
+    One shared SQLite file for every board; every method is safe to call from any process
     (WAL, busy timeouts, explicit BEGIN IMMEDIATE where races matter)."""
 
     def __init__(self, path):
@@ -64,10 +69,18 @@ class StateStore:
         self._conn = sqlite3.connect(str(path), check_same_thread=False, timeout=10.0)
         self._conn.row_factory = sqlite3.Row
         self._conn.isolation_level = None  # explicit transactions only
+        self._closed = False
         self._conn.execute("PRAGMA busy_timeout=10000")
         self._set_wal()
         self._conn.executescript(_SCHEMA)
         self._migrate()
+
+    def close(self) -> None:
+        """Release this consumer's SQLite connection exactly once."""
+        if self._closed:
+            return
+        self._closed = True
+        self._conn.close()
 
     def _set_wal(self) -> None:
         """WAL is a property of the *file*, set once by whoever creates it.

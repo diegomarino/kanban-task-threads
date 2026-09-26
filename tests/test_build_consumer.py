@@ -2,12 +2,15 @@
 blip is RetryableStartup (interval retry, sooner on a kick); a genuinely absent
 secret or rejected webhook is a config verdict (None, permanent no-op)."""
 
+import sqlite3
 import sys
 import types
 
 import pytest
 from conftest import FakeHttp
 from test_register import FakeCtx, load_entry_point
+
+from kanban_task_threads.routes import BoardRoute
 
 
 def install_fake_hermes(monkeypatch, tmp_path, secrets, scope_present=True):
@@ -159,7 +162,92 @@ def test_happy_path_builds_a_consumer(entry, tmp_path):
     module = entry(WEBHOOK, http=http)
     consumer = module._build_consumer(FakeCtx())
     assert consumer is not None
-    assert (tmp_path / "kanban" / "plugins" / "kanban-task-threads" / "default.db").exists()
+    assert (tmp_path / "kanban" / "plugins" / "kanban-task-threads" / "threads-state.db").exists()
+    consumer.close()
+
+
+def test_route_builder_uses_named_secret(entry):
+    http = FakeHttp()
+    http.queue(200, {"id": "fleet-webhook", "channel_id": "fleet-forum", "name": "fleet"})
+    http.queue(200, {"id": "legacy-webhook", "channel_id": "legacy-forum", "name": "legacy"})
+    secrets = {
+        "FLEET_WEBHOOK": "https://discord.com/api/webhooks/fleet/token",
+        "KANBAN_TASK_THREADS_WEBHOOK_URL": "https://discord.com/api/webhooks/legacy/token",
+        "KANBAN_TASK_THREADS_BOT_TOKEN": "shared-bot-token",
+    }
+    module = entry(secrets, http=http)
+    current_board_calls = []
+    sys.modules["hermes_cli.kanban_db"].get_current_board = lambda: (
+        current_board_calls.append("called") or "legacy"
+    )
+
+    consumer = module._build_consumer(FakeCtx(), BoardRoute("fleet", "FLEET_WEBHOOK"))
+
+    assert consumer._board == "fleet"
+    assert consumer._transport._bot_token == "shared-bot-token"
+    assert http.calls[0][1] == "https://discord.com/api/webhooks/fleet/token"
+    assert current_board_calls == []
+    consumer.close()
+
+    legacy = module._build_consumer(FakeCtx(), BoardRoute(None, "KANBAN_TASK_THREADS_WEBHOOK_URL"))
+
+    assert legacy._board == "legacy"
+    assert current_board_calls == ["called"]
+    legacy.close()
+
+
+def test_legacy_state_is_untouched(entry, tmp_path):
+    from kanban_task_threads.store import StateStore, state_db_path
+
+    old_path = tmp_path / "kanban" / "plugins" / "kanban-task-threads" / "default.db"
+    old_store = StateStore(old_path)
+    assert old_store.advance_cursor("default", old=0, new=23) is True
+    old_store.close()
+    old_bytes = old_path.read_bytes()
+
+    http = FakeHttp()
+    http.queue(200, {"id": "1", "channel_id": "7", "name": "taskz"})
+    consumer = entry(WEBHOOK, http=http)._build_consumer(FakeCtx())
+
+    assert old_path.read_bytes() == old_bytes
+    assert consumer._store.get_cursor("default") == 0
+    assert state_db_path(tmp_path).exists()
+    consumer.close()
+
+
+def test_build_failure_closes_opened_state(entry, monkeypatch):
+    import importlib
+
+    http = FakeHttp()
+    http.queue(200, {"id": "1", "channel_id": "7", "name": "taskz"})
+    module = entry(WEBHOOK, http=http)
+    consumer_mod = importlib.import_module("ktt_entry.kanban_task_threads.consumer")
+    captured = {}
+
+    def failing_consumer(board_db_path, state, transport, **kwargs):
+        captured["state"] = state
+        raise RuntimeError("consumer construction failed")
+
+    monkeypatch.setattr(consumer_mod, "Consumer", failing_consumer)
+
+    with pytest.raises(RuntimeError, match="consumer construction failed"):
+        module._build_consumer(FakeCtx())
+    with pytest.raises(sqlite3.ProgrammingError):
+        captured["state"].get_cursor("default")
+
+
+def test_route_preflight_error_names_board_without_logging_credentials(entry, caplog):
+    import logging
+
+    http = FakeHttp()
+    http.queue(401, {"detail": "sensitive-webhook-value"})
+    module = entry({"FLEET_WEBHOOK": "https://discord.com/api/webhooks/fleet/token"}, http=http)
+
+    with caplog.at_level(logging.ERROR):
+        assert module._build_consumer(FakeCtx(), BoardRoute("fleet", "FLEET_WEBHOOK")) is None
+
+    assert "fleet" in caplog.text
+    assert "sensitive-webhook-value" not in caplog.text
 
 
 def test_literal_ip_dashboard_url_warns_but_proceeds(entry, caplog):
