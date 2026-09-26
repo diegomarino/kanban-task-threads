@@ -320,6 +320,81 @@ def test_register_builds_one_runtime_per_explicit_route_and_registers_once(monke
     assert groups[0].stopped is True
 
 
+def test_each_route_refreshes_its_own_captured_profile_context(monkeypatch):
+    """Concurrent route startup must not enter one identity Context twice."""
+    module = load_entry_point()
+    runtime_module = importlib.import_module("ktt_entry.kanban_task_threads.runtime")
+    refreshers = []
+
+    class RecordingRuntime:
+        def __init__(self, build, *, refresh_context, **kwargs):
+            refreshers.append(refresh_context)
+
+        def start(self, context=None):
+            pass
+
+        def kick(self, context=None):
+            pass
+
+        def request_stop(self):
+            pass
+
+        def join(self, timeout=10.0):
+            pass
+
+    profile = contextvars.ContextVar("profile", default="missing")
+    profile.set("publisher")
+    barrier = threading.Barrier(2)
+    entered_identity = threading.Barrier(2)
+    seen = []
+
+    def concurrent_refresh(base_context, *, identity_context):
+        barrier.wait(timeout=1)
+
+        def read_profile():
+            entered_identity.wait(timeout=1)
+            return profile.get()
+
+        seen.append(identity_context.run(read_profile))
+        return base_context.copy()
+
+    monkeypatch.setattr(runtime_module, "Runtime", RecordingRuntime)
+    monkeypatch.setattr(module, "_refresh_profile_context", concurrent_refresh)
+    module.register(
+        ConfiguredCtx(
+            "publisher",
+            {
+                "routes": [
+                    {"selector": {"board": "fleet"}, "webhook_secret": "FLEET_WEBHOOK"},
+                    {"selector": {"board": "home"}, "webhook_secret": "HOME_WEBHOOK"},
+                ]
+            },
+        )
+    )
+
+    failures = []
+    workers = [
+        threading.Thread(
+            target=lambda refresh=refresh: _run_refresh(refresh, failures), daemon=True
+        )
+        for refresh in refreshers
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=1)
+
+    assert failures == []
+    assert seen == ["publisher", "publisher"]
+
+
+def _run_refresh(refresh, failures):
+    try:
+        refresh(contextvars.Context())
+    except BaseException as exc:
+        failures.append(exc)
+
+
 def test_empty_routes_registers_lifecycle_but_starts_no_runtimes(monkeypatch):
     module = load_entry_point()
     runtime_module = importlib.import_module("ktt_entry.kanban_task_threads.runtime")

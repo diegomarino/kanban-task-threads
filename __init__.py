@@ -122,6 +122,11 @@ def register(ctx):
     profile_context = contextvars.copy_context()
     runtimes = []
     for route in routes:
+        identity_context = profile_context.copy()
+
+        def refresh_context(attempt_context, identity_context=identity_context):
+            return _refresh_profile_context(attempt_context, identity_context=identity_context)
+
         runtimes.append(
             Runtime(
                 lambda route=route: _build_consumer(ctx, route),
@@ -130,9 +135,7 @@ def register(ctx):
                 # A dispatcher kick may carry an intentionally empty Context. It may
                 # accelerate this profile, but it must never replace the profile home
                 # whose secrets the retry refreshes.
-                refresh_context=lambda attempt_context: _refresh_profile_context(
-                    attempt_context, identity_context=profile_context
-                ),
+                refresh_context=refresh_context,
             )
         )
     runtime_group = RuntimeGroup(runtimes)
