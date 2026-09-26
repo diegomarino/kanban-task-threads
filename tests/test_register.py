@@ -266,6 +266,157 @@ def test_register_wires_fresh_profile_context_into_the_runtime(monkeypatch):
     assert isinstance(captured["start_context"], contextvars.Context)
 
 
+def test_register_builds_one_runtime_per_explicit_route_and_registers_once(monkeypatch):
+    module = load_entry_point()
+    runtime_module = importlib.import_module("ktt_entry.kanban_task_threads.runtime")
+    group_module = importlib.import_module("ktt_entry.kanban_task_threads.runtime_group")
+    runtimes = []
+    groups = []
+
+    class RecordingRuntime:
+        def __init__(self, build, **kwargs):
+            self.build = build
+            self.kwargs = kwargs
+            runtimes.append(self)
+
+    class RecordingGroup:
+        def __init__(self, members):
+            self.members = tuple(members)
+            self.kicks = []
+            groups.append(self)
+
+        def start(self, context=None):
+            self.start_context = context
+
+        def kick(self, context=None):
+            self.kicks.append(context)
+
+        def shutdown(self):
+            self.stopped = True
+
+    monkeypatch.setattr(runtime_module, "Runtime", RecordingRuntime)
+    monkeypatch.setattr(group_module, "RuntimeGroup", RecordingGroup)
+    ctx = ConfiguredCtx(
+        "publisher",
+        {
+            "routes": [
+                {"selector": {"board": "fleet"}, "webhook_secret": "FLEET_WEBHOOK"},
+                {"selector": {"board": "home"}, "webhook_secret": "HOME_WEBHOOK"},
+            ]
+        },
+    )
+
+    module.register(ctx)
+
+    assert len(runtimes) == 2
+    assert [runtime.build.__defaults__[0].board for runtime in runtimes] == ["fleet", "home"]
+    assert len(ctx.hooks) == len(module.KICK_HOOKS)
+    assert len(ctx.unload_callbacks) == 1
+    assert len(groups) == 1
+    assert groups[0].members == tuple(runtimes)
+    next(iter(ctx.hooks.values()))(board="fleet")
+    assert len(groups[0].kicks) == 1
+    ctx.unload_callbacks[0]()
+    assert groups[0].stopped is True
+
+
+def test_empty_routes_registers_lifecycle_but_starts_no_runtimes(monkeypatch):
+    module = load_entry_point()
+    runtime_module = importlib.import_module("ktt_entry.kanban_task_threads.runtime")
+    group_module = importlib.import_module("ktt_entry.kanban_task_threads.runtime_group")
+    runtimes = []
+    groups = []
+
+    class RecordingRuntime:
+        def __init__(self, *args, **kwargs):
+            runtimes.append(self)
+
+    class RecordingGroup:
+        def __init__(self, members):
+            self.members = tuple(members)
+            groups.append(self)
+
+        def start(self, context=None):
+            self.context = context
+
+        def kick(self, context=None):
+            pass
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(runtime_module, "Runtime", RecordingRuntime)
+    monkeypatch.setattr(group_module, "RuntimeGroup", RecordingGroup)
+    ctx = ConfiguredCtx("publisher", {"routes": []})
+
+    module.register(ctx)
+
+    assert runtimes == []
+    assert groups[0].members == ()
+    assert len(ctx.hooks) == len(module.KICK_HOOKS)
+    assert len(ctx.unload_callbacks) == 1
+
+
+def test_absent_routes_creates_the_legacy_runtime(monkeypatch):
+    module = load_entry_point()
+    runtime_module = importlib.import_module("ktt_entry.kanban_task_threads.runtime")
+    group_module = importlib.import_module("ktt_entry.kanban_task_threads.runtime_group")
+    runtimes = []
+
+    class RecordingRuntime:
+        def __init__(self, build, **kwargs):
+            self.build = build
+            runtimes.append(self)
+
+    class RecordingGroup:
+        def __init__(self, members):
+            self.members = tuple(members)
+
+        def start(self, context=None):
+            pass
+
+        def kick(self, context=None):
+            pass
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(runtime_module, "Runtime", RecordingRuntime)
+    monkeypatch.setattr(group_module, "RuntimeGroup", RecordingGroup)
+    module.register(ConfiguredCtx("publisher", {}))
+
+    assert len(runtimes) == 1
+    route = runtimes[0].build.__defaults__[0]
+    assert route.board is None
+    assert route.webhook_secret == "KANBAN_TASK_THREADS_WEBHOOK_URL"
+
+
+def test_invalid_routes_are_actionable_and_start_nothing(monkeypatch, caplog):
+    module = load_entry_point()
+    runtime_module = importlib.import_module("ktt_entry.kanban_task_threads.runtime")
+    group_module = importlib.import_module("ktt_entry.kanban_task_threads.runtime_group")
+    created = []
+
+    class RecordingRuntime:
+        def __init__(self, *args, **kwargs):
+            created.append("runtime")
+
+    class RecordingGroup:
+        def __init__(self, *args, **kwargs):
+            created.append("group")
+
+    monkeypatch.setattr(runtime_module, "Runtime", RecordingRuntime)
+    monkeypatch.setattr(group_module, "RuntimeGroup", RecordingGroup)
+    with caplog.at_level("ERROR"):
+        ctx = ConfiguredCtx("publisher", {"routes": {"board": "fleet"}})
+        module.register(ctx)
+
+    assert created == []
+    assert ctx.hooks == {}
+    assert ctx.unload_callbacks == []
+    assert "routes must be a list when configured" in caplog.text
+
+
 def test_register_installs_unload_before_runtime_start(monkeypatch):
     module = load_entry_point()
     runtime_module = importlib.import_module("ktt_entry.kanban_task_threads.runtime")

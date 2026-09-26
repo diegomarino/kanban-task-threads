@@ -106,23 +106,39 @@ def register(ctx):
         # secret resolution, database access, or network work.
         return
 
+    from .kanban_task_threads.routes import ROUTES_UNSET, RouteConfigError, normalize_routes
     from .kanban_task_threads.runtime import Runtime
+    from .kanban_task_threads.runtime_group import RuntimeGroup
+
+    try:
+        routes = normalize_routes(
+            ctx.get_config("routes", ROUTES_UNSET),
+            legacy_board=ctx.get_config("board") or None,
+        )
+    except RouteConfigError as exc:
+        logger.error("kanban-task-threads: invalid routes configuration: %s", exc)
+        return
 
     profile_context = contextvars.copy_context()
-    runtime = Runtime(
-        lambda: _build_consumer(ctx),
-        logger=logger,
-        poll_seconds=float(ctx.get_config("poll_seconds", 20) or 20),
-        # A dispatcher kick may carry an intentionally empty Context. It may
-        # accelerate this profile, but it must never replace the profile home
-        # whose secrets the retry refreshes.
-        refresh_context=lambda attempt_context: _refresh_profile_context(
-            attempt_context, identity_context=profile_context
-        ),
-    )
+    runtimes = []
+    for route in routes:
+        runtimes.append(
+            Runtime(
+                lambda route=route: _build_consumer(ctx, route),
+                logger=logger,
+                poll_seconds=float(ctx.get_config("poll_seconds", 20) or 20),
+                # A dispatcher kick may carry an intentionally empty Context. It may
+                # accelerate this profile, but it must never replace the profile home
+                # whose secrets the retry refreshes.
+                refresh_context=lambda attempt_context: _refresh_profile_context(
+                    attempt_context, identity_context=profile_context
+                ),
+            )
+        )
+    runtime_group = RuntimeGroup(runtimes)
 
     def _kick(**kwargs):
-        runtime.kick(context=contextvars.copy_context())
+        runtime_group.kick(context=contextvars.copy_context())
 
     for hook in KICK_HOOKS:
         ctx.register_hook(hook, _kick)
@@ -135,7 +151,7 @@ def register(ctx):
     # stub context stubs the attribute.)
     on_unload = getattr(ctx, "on_unload", None)
     if callable(on_unload):
-        on_unload(runtime.shutdown)
+        on_unload(runtime_group.shutdown)
 
     # Every profile that loads the plugin becomes a lease candidate here (ADR-0013).
     # Waiting for a kick instead would elect the publisher by accident: kanban hooks
@@ -143,7 +159,7 @@ def register(ctx):
     # would never choose and that process dying would stop publishing silently.
     # This starts a thread that sleeps before it builds, so register() itself
     # still touches nothing — see the runtime module docstring.
-    runtime.start(profile_context)
+    runtime_group.start(profile_context)
 
 
 def _build_consumer(ctx, route: "BoardRoute | None" = None):

@@ -124,12 +124,20 @@ class Runtime:
         already blocked longer than the join timeout may finish later, and
         consumer leases fence any successor.
         """
+        self.request_stop()
+        self.join()
+
+    def request_stop(self) -> None:
+        """Signal a worker to stop without waiting for an in-flight operation."""
         self._stopping.set()
         self._kicked.set()
+
+    def join(self, timeout: float = 10.0) -> None:
+        """Wait for the worker, bounded by the caller's remaining deadline."""
         with self._lock:
             thread = self._thread
         if thread is not None:
-            thread.join(timeout=10)
+            thread.join(timeout=timeout)
 
     def alive(self) -> bool:
         thread = self._thread
@@ -181,26 +189,35 @@ class Runtime:
         # validate probe. A kick collapses the wait, so hook-driven profiles
         # keep building immediately.
         consumer = None
-        while not self._stopping.is_set():
-            self._kicked.wait(self._poll)
-            self._kicked.clear()
-            if self._stopping.is_set():
-                break
-            if consumer is None:
-                consumer = self._build_once()
-                if consumer is None:
-                    if self._disabled:
-                        return  # a config verdict — permanent until a reload
-                    continue  # deferred — try again next interval, or next kick
+        try:
+            while not self._stopping.is_set():
+                self._kicked.wait(self._poll)
+                self._kicked.clear()
                 if self._stopping.is_set():
-                    break  # unload began while the build/preflight was in flight
-            if self._stopping.is_set():
-                break  # the last gate before a pass: unload began, do not start one
-            try:
-                report = consumer.run_once()
-                for line in report.errors:
-                    self._log.error("kanban-task-threads: %s", line)
-                for line in getattr(report, "warnings", ()):
-                    self._log.warning("kanban-task-threads: %s", line)
-            except Exception:
-                self._log.exception("kanban-task-threads: consume pass failed; will retry")
+                    break
+                if consumer is None:
+                    consumer = self._build_once()
+                    if consumer is None:
+                        if self._disabled:
+                            return  # a config verdict — permanent until a reload
+                        continue  # deferred — try again next interval, or next kick
+                    if self._stopping.is_set():
+                        break  # unload began while the build/preflight was in flight
+                if self._stopping.is_set():
+                    break  # the last gate before a pass: unload began, do not start one
+                try:
+                    report = consumer.run_once()
+                    for line in report.errors:
+                        self._log.error("kanban-task-threads: %s", line)
+                    for line in getattr(report, "warnings", ()):
+                        self._log.warning("kanban-task-threads: %s", line)
+                except Exception:
+                    self._log.exception("kanban-task-threads: consume pass failed; will retry")
+        finally:
+            if consumer is not None:
+                close = getattr(consumer, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        self._log.exception("kanban-task-threads: consumer cleanup failed")
