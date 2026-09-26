@@ -7,15 +7,16 @@ gate (`hermes plugins validate`) runs it in a subprocess against a **stub
 context** whose attributes are no-ops, and `plugins doctor` loads it in a
 temporary home with **sockets blocked**. So `register()` only registers: the
 eight kanban hooks (all mapped to the same cheap kick), the unload callback,
-and `runtime.start()`. Anything real — opening a DB, resolving a secret,
-touching the network — happens in the runtime's own thread.
+and `runtime_group.start()`. Anything real — opening a DB, resolving a secret,
+touching the network — happens in the per-route worker threads.
 
-`start()` spawns that thread but the thread **sleeps one poll interval before
-its first build** (ADR-0013). That is what keeps `register()` honest without
+The runtime group's `start()` spawns one worker per configured route, and each
+worker **sleeps one poll interval before its first build** (ADR-0013). That is
+what keeps `register()` honest without
 trying to detect the probe: the stub context answers *every* attribute with a
 no-op, including `on_unload`, so no attribute test can tell a probe from a real
-runtime. The probe is outlived instead — it exits in milliseconds. A hook kick
-collapses the wait, so nothing is slower where hooks do fire.
+runtime group. The probe is outlived instead — it exits in milliseconds. A hook
+kick collapses the wait, so nothing is slower where hooks do fire.
 
 Starting here rather than on the first kick is what makes every profile a lease
 candidate. Kanban hooks fire only in the process holding Hermes' singleton
@@ -23,18 +24,21 @@ dispatcher lock, so a kick-only start would elect the publisher by gateway boot
 order and leave the `consume:<board>` lease with nobody to fail over to.
 
 `publisher_profile` is the explicit exception (ADR-0014). Empty is backward
-compatible and keeps every profile as a candidate. When set, `register()`
-compares it exactly with `ctx.profile_name`; non-matching profiles are inert
-and do not create a runtime, hooks, unload callback, secret lookup, database
-handle, or network request. Pinning is useful when Discord credentials and
-role ownership belong to one existing profile, but it intentionally gives up
-ADR-0013's cross-profile failover. Clearing the setting restores automatic
-lease candidacy.
+compatible and keeps every profile as a candidate. In that unpinned mode, all
+candidate profiles must have consistent routes and access to the required
+secrets; leases do not reconcile conflicting configuration. Pin
+`publisher_profile` when that consistency cannot be guaranteed. When set,
+`register()` compares it exactly with `ctx.profile_name`; non-matching profiles
+are inert and do not create a runtime group, hooks, unload callback, secret
+lookup, database handle, or network request. Pinning is useful when Discord
+credentials and role ownership belong to one existing profile, but it
+intentionally gives up ADR-0013's cross-profile failover. Clearing the setting
+restores automatic lease candidacy.
 
 The unload callback is load-bearing, not politeness:
 `discover_plugins(force=True)` re-imports the module and `hermes plugins
-disable` walks the same path — without `ctx.on_unload(runtime.shutdown)`, the
-consumer thread would be orphaned, contesting the lease and holding HTTP
+disable` walks the same path — without `ctx.on_unload(runtime_group.shutdown)`,
+the per-route workers would be orphaned, contesting leases and holding HTTP
 sessions from a module nobody can reach anymore.
 
 ## Secrets
