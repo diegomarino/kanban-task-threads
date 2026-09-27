@@ -195,6 +195,58 @@ def test_shutdown_during_build_does_not_start_a_consumer_pass():
     assert runtime.alive() is False
 
 
+def test_consumer_closes_after_worker_exit_including_stop_during_build():
+    class ClosableConsumer(FakeConsumer):
+        def __init__(self):
+            super().__init__()
+            self.closed = threading.Event()
+
+        def close(self):
+            self.closed.set()
+
+    # A bounded join cannot close an object the worker has not received yet.
+    build_started = threading.Event()
+    release_build = threading.Event()
+    built = ClosableConsumer()
+
+    def blocked_build():
+        build_started.set()
+        release_build.wait(timeout=1)
+        return built
+
+    runtime = Runtime(blocked_build, poll_seconds=30)
+    runtime.kick()
+    assert build_started.wait(timeout=1)
+    runtime.request_stop()
+    runtime.join(timeout=0)
+    assert not built.closed.is_set()
+    release_build.set()
+    assert built.closed.wait(timeout=1)
+    assert built.runs == 0
+
+    # The worker likewise keeps a running consumer open until its pass returns.
+    pass_started = threading.Event()
+    release_pass = threading.Event()
+    running = ClosableConsumer()
+
+    def blocked_pass(now=None):
+        pass_started.set()
+        release_pass.wait(timeout=1)
+        from kanban_task_threads.consumer import Report
+
+        return Report()
+
+    running.run_once = blocked_pass
+    runtime = Runtime(lambda: running, poll_seconds=30)
+    runtime.kick()
+    assert pass_started.wait(timeout=1)
+    runtime.request_stop()
+    runtime.join(timeout=0)
+    assert not running.closed.is_set()
+    release_pass.set()
+    assert running.closed.wait(timeout=1)
+
+
 def test_shutdown_signals_an_in_flight_pass_instead_of_waiting_for_it():
     """Unload must be bounded even mid-pass, and the pass must be told to stop.
 
@@ -436,7 +488,11 @@ def test_unload_stops_the_consumer_and_releases_its_lease(tmp_path):
 
     runtime.shutdown()  # what ctx.on_unload invokes
     assert runtime.alive() is False
+    replacement_store = StateStore(tmp_path / "state.db")
     assert (
-        store.acquire_lease("consume:default", "someone-else", now=int(time.time()), ttl=60)
+        replacement_store.acquire_lease(
+            "consume:default", "someone-else", now=int(time.time()), ttl=60
+        )
         is not None
     )
+    replacement_store.close()

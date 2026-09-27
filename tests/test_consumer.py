@@ -3,6 +3,8 @@ unreliable is handled here: unknown-outcome creates are recorded and never
 blindly retried, permanent 4xx dead-letter, 404 tombstones, 429 backs off
 per task. Everything runs against a real SQLite board fixture — no network."""
 
+import sqlite3
+
 import pytest
 from conftest import FakeTransport, add_event, insert_task, make_board
 
@@ -78,6 +80,16 @@ def test_second_run_is_silent(board, parts):
     report = consumer.run_once(now=NOW + 10)
     assert len(transport.calls) == n
     assert report.opened == [] and report.replied == 0
+
+
+def test_close_is_idempotent_and_closes_the_owned_state(board, parts):
+    store, _, consumer = parts
+
+    consumer.close()
+    consumer.close()
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        store.get_cursor("default")
 
 
 def test_new_events_append_without_reopening(board, parts):

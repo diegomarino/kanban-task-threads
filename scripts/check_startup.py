@@ -111,6 +111,14 @@ def run_checks():
                 second.run(secret_scope.get_secret, "KTT_CHECK_AMBIENT"), "launch-only"
             )
 
+        def test_supported_plugin_context_preserves_missing_routes_default(self):
+            from hermes_cli.plugins import PluginContext
+            from hermes_cli.plugins_manifest import PluginManifest
+
+            unset = object()
+            context = PluginContext(PluginManifest(name="kanban-task-threads"), None)
+            self.assertIs(context.get_config("routes", unset), unset)
+
         def test_secondary_profile_isolation_and_latest_attempt_context(self):
             secret_scope.set_multiplex_active(True)
             (self.home / ".env").write_text("KTT_CHECK_PROFILE=launch\n")
@@ -205,6 +213,63 @@ def run_checks():
             self.check_deferred_start(self.home)
             self.check_deferred_start(self.other)
 
+        def test_explicit_routes_start_independent_workers_with_one_hook_callback(self):
+            passed = threading.Event()
+            callbacks = {}
+            unload_callbacks = []
+            attempts = []
+            passes = []
+
+            class Context:
+                profile_name = "synthetic"
+
+                def get_config(self, key, default=None):
+                    values = {
+                        "poll_seconds": 0.01,
+                        "routes": [
+                            {"selector": {"board": "fleet"}, "webhook_secret": "FLEET_WEBHOOK"},
+                            {"selector": {"board": "home"}, "webhook_secret": "HOME_WEBHOOK"},
+                        ],
+                    }
+                    return values.get(key, default)
+
+                def register_hook(self, name, callback):
+                    callbacks[name] = callback
+
+                def on_unload(self, callback):
+                    unload_callbacks.append(callback)
+
+            class Consumer:
+                def __init__(self, route):
+                    self.route = route
+
+                def run_once(self):
+                    passes.append(self.route.board)
+                    if len(passes) == 2:
+                        passed.set()
+                    return types.SimpleNamespace(errors=[], warnings=[])
+
+                def close(self):
+                    pass
+
+            def build(ctx, route=None):
+                attempts.append(route.board)
+                return Consumer(route)
+
+            with patch.object(entry, "_build_consumer", build):
+                self.identity(self.home).run(entry.register, Context())
+                try:
+                    self.assertTrue(passed.wait(3), "Both explicit routes never reached a pass")
+                    self.assertCountEqual(attempts, ["fleet", "home"])
+                    self.assertCountEqual(passes, ["fleet", "home"])
+                    self.assertEqual(set(callbacks), set(entry.KICK_HOOKS))
+                    self.assertEqual(len({id(callback) for callback in callbacks.values()}), 1)
+                    self.assertEqual(len(unload_callbacks), 1)
+                finally:
+                    for callback in unload_callbacks:
+                        callback()
+            self.assertFalse(any(t.name == "kanban-task-threads" for t in threading.enumerate()))
+
         def check_deferred_start(self, home):
             passed = threading.Event()
             attempts = []
@@ -228,7 +293,7 @@ def run_checks():
                     passed.set()
                     return types.SimpleNamespace(errors=[], warnings=[])
 
-            def build(ctx):
+            def build(ctx, route=None):
                 attempts.append(hermes_constants.get_hermes_home())
                 observed.append(secret_scope.get_secret("KTT_CHECK_PROFILE"))
                 if len(attempts) == 1:

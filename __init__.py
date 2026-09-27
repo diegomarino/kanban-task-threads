@@ -17,6 +17,10 @@ what guarantees delivery; a missed kick costs seconds, not an event.
 import contextvars
 import logging
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .kanban_task_threads.routes import BoardRoute
 
 logger = logging.getLogger(__name__)
 
@@ -102,23 +106,42 @@ def register(ctx):
         # secret resolution, database access, or network work.
         return
 
+    from .kanban_task_threads.routes import ROUTES_UNSET, RouteConfigError, normalize_routes
     from .kanban_task_threads.runtime import Runtime
+    from .kanban_task_threads.runtime_group import RuntimeGroup
+
+    try:
+        routes = normalize_routes(
+            ctx.get_config("routes", ROUTES_UNSET),
+            legacy_board=ctx.get_config("board") or None,
+        )
+    except RouteConfigError as exc:
+        logger.error("kanban-task-threads: invalid routes configuration: %s", exc)
+        return
 
     profile_context = contextvars.copy_context()
-    runtime = Runtime(
-        lambda: _build_consumer(ctx),
-        logger=logger,
-        poll_seconds=float(ctx.get_config("poll_seconds", 20) or 20),
-        # A dispatcher kick may carry an intentionally empty Context. It may
-        # accelerate this profile, but it must never replace the profile home
-        # whose secrets the retry refreshes.
-        refresh_context=lambda attempt_context: _refresh_profile_context(
-            attempt_context, identity_context=profile_context
-        ),
-    )
+    runtimes = []
+    for route in routes:
+        identity_context = profile_context.copy()
+
+        def refresh_context(attempt_context, identity_context=identity_context):
+            return _refresh_profile_context(attempt_context, identity_context=identity_context)
+
+        runtimes.append(
+            Runtime(
+                lambda route=route: _build_consumer(ctx, route),
+                logger=logger,
+                poll_seconds=float(ctx.get_config("poll_seconds", 20) or 20),
+                # A dispatcher kick may carry an intentionally empty Context. It may
+                # accelerate this profile, but it must never replace the profile home
+                # whose secrets the retry refreshes.
+                refresh_context=refresh_context,
+            )
+        )
+    runtime_group = RuntimeGroup(runtimes)
 
     def _kick(**kwargs):
-        runtime.kick(context=contextvars.copy_context())
+        runtime_group.kick(context=contextvars.copy_context())
 
     for hook in KICK_HOOKS:
         ctx.register_hook(hook, _kick)
@@ -131,7 +154,7 @@ def register(ctx):
     # stub context stubs the attribute.)
     on_unload = getattr(ctx, "on_unload", None)
     if callable(on_unload):
-        on_unload(runtime.shutdown)
+        on_unload(runtime_group.shutdown)
 
     # Every profile that loads the plugin becomes a lease candidate here (ADR-0013).
     # Waiting for a kick instead would elect the publisher by accident: kanban hooks
@@ -139,22 +162,22 @@ def register(ctx):
     # would never choose and that process dying would stop publishing silently.
     # This starts a thread that sleeps before it builds, so register() itself
     # still touches nothing — see the runtime module docstring.
-    runtime.start(profile_context)
+    runtime_group.start(profile_context)
 
 
-def _build_consumer(ctx):
+def _build_consumer(ctx, route: "BoardRoute | None" = None):
     """Run one startup attempt inside the profile context selected by Runtime.
 
     Returning None degrades the plugin to a no-op (ADR-0003: requires_env is
     not a load gate; never queue work that can never be sent).
     """
     import os
-    from pathlib import Path
 
     from .kanban_task_threads.avatars import AvatarConfigError, AvatarSet
     from .kanban_task_threads.consumer import Consumer
+    from .kanban_task_threads.routes import BoardRoute
     from .kanban_task_threads.runtime import RetryableStartup
-    from .kanban_task_threads.store import StateStore
+    from .kanban_task_threads.store import StateStore, state_db_path
     from .kanban_task_threads.transport import (
         DiscordTransport,
         TransportError,
@@ -171,24 +194,29 @@ def _build_consumer(ctx):
         return None
 
     try:
-        webhook_url = secret_scope.get_secret(_SECRET_WEBHOOK)
+        if route is None:
+            route = BoardRoute(ctx.get_config("board") or None, _SECRET_WEBHOOK)
+        board = route.board or get_current_board()
+        webhook_url = secret_scope.get_secret(route.webhook_secret)
         bot_token = secret_scope.get_secret(_SECRET_BOT)
     except Exception as exc:  # e.g. UnscopedSecretError under multiplexing
-        raise RetryableStartup(f"secret scope unavailable in this kick's context: {exc!r}") from exc
+        raise RetryableStartup(
+            f"secret scope unavailable while building board {locals().get('board', 'legacy')!r}"
+        ) from exc
     if not webhook_url:
         if secret_scope.current_secret_scope() is None:
             # The dispatcher tick runs in a deliberately EMPTY contextvars
             # context: this kick cannot see profile secrets, but a later kick
             # from a task hook can. Not a config verdict.
             raise RetryableStartup(
-                f"{_SECRET_WEBHOOK} is not in the environment and this kick's "
+                f"{route.webhook_secret} is not available for board {board!r} and this kick's "
                 "context carries no profile secret scope; waiting for one that does"
             )
         logger.warning(
-            "kanban-task-threads: %s is not set; degrading to a "
+            "kanban-task-threads: webhook is not set for board %r; degrading to a "
             "no-op (in production it should be an op:// reference "
             "resolved by the profile env, never a literal)",
-            _SECRET_WEBHOOK,
+            board,
         )
         return None
 
@@ -253,23 +281,20 @@ def _build_consumer(ctx):
     except TransportError as err:
         if 400 <= err.status < 500 and err.status != 429:
             logger.error(
-                "kanban-task-threads: Discord rejected the webhook "
-                "(HTTP %s %r) — check %s. Plugin is inactive.",
+                "kanban-task-threads: Discord rejected the webhook for board %r "
+                "(HTTP %s). Plugin is inactive.",
+                board,
                 err.status,
-                err.body,
-                _SECRET_WEBHOOK,
             )
             return None
-        raise RetryableStartup(f"Discord preflight failed: {err}") from err
+        raise RetryableStartup(
+            f"Discord preflight failed for board {board!r} (HTTP {err.status})"
+        ) from err
     except OSError as exc:  # URLError and socket timeouts are OSError
-        raise RetryableStartup(f"network error during preflight: {exc!r}") from exc
+        raise RetryableStartup(f"network error during preflight for board {board!r}") from exc
 
-    # State is board state (ADR-0005): a plugin-owned DB under the board-shared
+    # State is board-qualified inside one plugin-owned DB under the shared
     # kanban root — never ctx.state, which resolves per profile.
-    board = ctx.get_config("board") or get_current_board()
-    state = StateStore(
-        Path(kanban_home()) / "kanban" / "plugins" / "kanban-task-threads" / f"{board}.db"
-    )
 
     dashboard_url = ctx.get_config("dashboard_url", "") or ""
     if re.search(r"//(\d{1,3}\.){3}\d{1,3}([:/]|$)", dashboard_url):
@@ -289,19 +314,24 @@ def _build_consumer(ctx):
         info.get("channel_id"),
         info.get("name"),
     )
-    return Consumer(
-        kanban_db_path(board),
-        state,
-        transport,
-        board=board,
-        holder=f"{ctx.profile_name}:{os.getpid()}",
-        destination=f"discord:webhook:{info.get('id')}@{info.get('channel_id')}",
-        stale_after=int(ctx.get_config("stale_after_seconds", 600) or 600),
-        include_workspace_path=bool(ctx.get_config("include_workspace_path", False)),
-        dashboard_url=dashboard_url,
-        card_template=ctx.get_config("card_template"),
-        reply_templates=ctx.get_config("reply_templates") or {},
-        comment_excerpt_chars=int(ctx.get_config("comment_excerpt_chars", 180) or 0),
-        guild_id=str(info.get("guild_id") or ""),
-        **kwargs,
-    )
+    state = StateStore(state_db_path(kanban_home()))
+    try:
+        return Consumer(
+            kanban_db_path(board),
+            state,
+            transport,
+            board=board,
+            holder=f"{ctx.profile_name}:{os.getpid()}",
+            destination=f"discord:webhook:{info.get('id')}@{info.get('channel_id')}",
+            stale_after=int(ctx.get_config("stale_after_seconds", 600) or 600),
+            include_workspace_path=bool(ctx.get_config("include_workspace_path", False)),
+            dashboard_url=dashboard_url,
+            card_template=ctx.get_config("card_template"),
+            reply_templates=ctx.get_config("reply_templates") or {},
+            comment_excerpt_chars=int(ctx.get_config("comment_excerpt_chars", 180) or 0),
+            guild_id=str(info.get("guild_id") or ""),
+            **kwargs,
+        )
+    except BaseException:
+        state.close()
+        raise

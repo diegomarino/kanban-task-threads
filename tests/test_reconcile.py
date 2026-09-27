@@ -72,6 +72,34 @@ def test_unknown_task_raises(db):
         reconcile.rearm(db, "default", "t_nope")
 
 
+def test_reconcile_only_changes_selected_board(tmp_path):
+    path = tmp_path / "state.db"
+    store = StateStore(path)
+    for board in ("fleet", "web"):
+        store.begin_create(board, "t_same", now=100)
+        store.complete_create(
+            board,
+            "t_same",
+            thread_id=f"{board}-thread",
+            message_id=f"{board}-message",
+            destination=f"discord:{board}",
+        )
+        store.mark_dead_letter(board, "t_same", "requires operator action")
+    store.close()
+
+    reconcile.rearm(path, "fleet", "t_same")
+
+    reopened = StateStore(path)
+    assert reopened.get_post("fleet", "t_same")["state"] == "live"
+    sibling = reopened.get_post("web", "t_same")
+    assert (sibling["state"], sibling["thread_id"], sibling["destination"]) == (
+        "dead_letter",
+        "web-thread",
+        "discord:web",
+    )
+    reopened.close()
+
+
 def test_cli_without_a_verb_prints_usage_and_returns_two(capsys):
     assert reconcile.main([]) == 2
     assert "Operator reconciliation" in capsys.readouterr().out

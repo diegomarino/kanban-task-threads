@@ -7,15 +7,16 @@ gate (`hermes plugins validate`) runs it in a subprocess against a **stub
 context** whose attributes are no-ops, and `plugins doctor` loads it in a
 temporary home with **sockets blocked**. So `register()` only registers: the
 eight kanban hooks (all mapped to the same cheap kick), the unload callback,
-and `runtime.start()`. Anything real — opening a DB, resolving a secret,
-touching the network — happens in the runtime's own thread.
+and `runtime_group.start()`. Anything real — opening a DB, resolving a secret,
+touching the network — happens in the per-route worker threads.
 
-`start()` spawns that thread but the thread **sleeps one poll interval before
-its first build** (ADR-0013). That is what keeps `register()` honest without
+The runtime group's `start()` spawns one worker per configured route, and each
+worker **sleeps one poll interval before its first build** (ADR-0013). That is
+what keeps `register()` honest without
 trying to detect the probe: the stub context answers *every* attribute with a
 no-op, including `on_unload`, so no attribute test can tell a probe from a real
-runtime. The probe is outlived instead — it exits in milliseconds. A hook kick
-collapses the wait, so nothing is slower where hooks do fire.
+runtime group. The probe is outlived instead — it exits in milliseconds. A hook
+kick collapses the wait, so nothing is slower where hooks do fire.
 
 Starting here rather than on the first kick is what makes every profile a lease
 candidate. Kanban hooks fire only in the process holding Hermes' singleton
@@ -23,28 +24,33 @@ dispatcher lock, so a kick-only start would elect the publisher by gateway boot
 order and leave the `consume:<board>` lease with nobody to fail over to.
 
 `publisher_profile` is the explicit exception (ADR-0014). Empty is backward
-compatible and keeps every profile as a candidate. When set, `register()`
-compares it exactly with `ctx.profile_name`; non-matching profiles are inert
-and do not create a runtime, hooks, unload callback, secret lookup, database
-handle, or network request. Pinning is useful when Discord credentials and
-role ownership belong to one existing profile, but it intentionally gives up
-ADR-0013's cross-profile failover. Clearing the setting restores automatic
-lease candidacy.
+compatible and keeps every profile as a candidate. In that unpinned mode, all
+candidate profiles must have consistent routes and access to the required
+secrets; leases do not reconcile conflicting configuration. Pin
+`publisher_profile` when that consistency cannot be guaranteed. When set,
+`register()` compares it exactly with `ctx.profile_name`; non-matching profiles
+are inert and do not create a runtime group, hooks, unload callback, secret
+lookup, database handle, or network request. Pinning is useful when Discord
+credentials and role ownership belong to one existing profile, but it
+intentionally gives up ADR-0013's cross-profile failover. Clearing the setting
+restores automatic lease candidacy.
 
 The unload callback is load-bearing, not politeness:
 `discover_plugins(force=True)` re-imports the module and `hermes plugins
-disable` walks the same path — without `ctx.on_unload(runtime.shutdown)`, the
-consumer thread would be orphaned, contesting the lease and holding HTTP
+disable` walks the same path — without `ctx.on_unload(runtime_group.shutdown)`,
+the per-route workers would be orphaned, contesting leases and holding HTTP
 sessions from a module nobody can reach anymore.
 
 ## Secrets
 
-- `KANBAN_TASK_THREADS_WEBHOOK_URL` — required. Without it the plugin degrades
-  to a no-op with one log line.
+- `KANBAN_TASK_THREADS_WEBHOOK_URL` — the legacy webhook secret, required only
+  when `routes` is absent. Without it, legacy startup degrades to a no-op with
+  one log line.
 - `KANBAN_TASK_THREADS_BOT_TOKEN` — optional; may reference or alias the
-  selected publisher profile's existing Discord bot token. The plugin does
-  not provision a dedicated bot. It unlocks `title_state`/`tags`, the real tag
-  preflight, and bounded metadata reconciliation.
+  selected publisher profile's existing Discord bot token. Every route hosted
+  by that profile shares it. The plugin does not provision a dedicated bot. It
+  unlocks `title_state`/`tags`, the real tag preflight, and bounded metadata
+  reconciliation.
 
 The token authenticates the bot; authorization comes from its
 integration-managed Discord role. That role needs access to the forum,
@@ -74,6 +80,46 @@ by the profile environment; never a literal in config. The names are
 deliberately *not* prefixed
 `HERMES_KANBAN_`: that prefix is treated as process-global by Hermes and would
 bypass profile scoping.
+
+### Explicit board routes
+
+`routes` is optional. When it is absent, the legacy `board` setting and
+`KANBAN_TASK_THREADS_WEBHOOK_URL` select one board and destination. When it is
+an explicit empty list (`routes: []`), the plugin starts no consumers and
+publishes nothing. Otherwise, every item must contain exactly a board selector
+and a profile-scoped webhook secret **name**:
+
+```yaml
+plugins:
+  entries:
+    kanban-task-threads:
+      settings:
+        publisher_profile: publisher
+        routes:
+          - selector: {board: fleet}
+            webhook_secret: FLEET_WEBHOOK
+          - selector: {board: web}
+            webhook_secret: WEB_WEBHOOK
+```
+
+`FLEET_WEBHOOK` and `WEB_WEBHOOK` belong in the selected publisher profile's
+secret scope. A route has exactly one destination and a board appears at most
+once. Selectors must be exactly `{board: ...}`; project selectors, extra
+selector keys, and multi-destination publication are rejected. Future routing
+must remain additive without changing the meaning of an existing board route.
+
+One publisher profile may host independent consumers for several routes. Their
+startup, secret failures, retries, and `consume:<board>` leases are route-local;
+a failing route does not prevent healthy board routes from publishing. The
+optional `KANBAN_TASK_THREADS_BOT_TOKEN` is currently shared by all of those
+routes. This is a temporary constraint: per-route bot credentials are not
+implemented and no delivery behavior is promised for them.
+
+`discord_applied_tag_ids` remains a shared creation setting. Discord tag IDs
+are forum-local; do not silently carry an ID from one route's forum to another.
+Routes needing different required creation tags should use the existing
+bot-managed tag setup in each forum instead of assuming this shared setting can
+be translated.
 
 **The contextvars subtlety:** a `ContextVar`-based secret scope does not cross
 an unbound thread. `start()` and every kick therefore capture

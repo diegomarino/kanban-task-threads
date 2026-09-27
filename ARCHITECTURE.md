@@ -10,8 +10,8 @@ listed at the end — read them before trusting this document's guarantees.
 flowchart TB
     hooks["Hermes hooks — 8 kanban kicks<br/>(register(ctx): hooks · unload · deferred start,<br/>probed by validate with a stub context)"]
     entry["__init__.py<br/>ctx.on_unload(runtime.shutdown) — the teardown contract"]
-    runtime["runtime.Runtime<br/>one daemon thread, started by register()<br/>waits one interval, then builds · poll + kick loop"]
-    build["_build_consumer (each startup attempt until built,<br/>in the registered profile context): secrets · preflight · paths"]
+    runtime["runtime.RuntimeGroup<br/>one independent Runtime per explicit board route<br/>each waits one interval, then builds · poll + kick loop"]
+    build["_build_consumer (each route startup attempt until built,<br/>in the registered profile context): named secret · preflight · shared state path"]
 
     subgraph boarddb["board DB (read-only)"]
         tasks[(tasks)]
@@ -58,8 +58,8 @@ stateDiagram-v2
 
 | Module | Responsibility | Decision |
 |---|---|---|
-| `__init__.py` (root) | `register(ctx)`: an explicit non-matching `publisher_profile` returns inert; otherwise registers 8 kanban hooks as kicks, the unload callback, and `runtime.start()` — no I/O of its own, since the thread sleeps before it builds. `_build_consumer` is the deferred startup: secrets, preflight, paths, degrade-to-no-op. | ADR-0002, ADR-0003, ADR-0013, ADR-0014 |
-| `kanban_task_threads/runtime.py` | One daemon thread between hooks and consumer: started at register time so every profile is a lease candidate, waits one interval before its first build, poll interval as fallback for hook-less events, `shutdown()` joins the thread. | ADR-0002, ADR-0013 |
+| `__init__.py` (root) | `register(ctx)`: an explicit non-matching `publisher_profile` returns inert; otherwise validates legacy or explicit board routes, registers 8 kanban hooks as group kicks, the unload callback, and starts the runtime group — no I/O of its own, since workers sleep before they build. `_build_consumer` is route-local deferred startup: named secret, preflight, shared state path, degrade-to-no-op. | ADR-0002, ADR-0003, ADR-0013, ADR-0014 |
+| `kanban_task_threads/runtime.py`, `runtime_group.py` | One independent daemon worker per route, grouped for profile-local kicks and teardown. Each starts at registration so every permitted profile is a lease candidate, waits one interval before its first build, polls as fallback for hook-less events, and shuts down independently. | ADR-0002, ADR-0013 |
 | `kanban_task_threads/view.py` | Task row → flat dict of strings. Computes `stale`; gates `workspace_path` behind opt-in. | ADR-0001, ADR-0011 |
 | `kanban_task_threads/render.py` | View → `Card`; event payload → reply text. Status vocabulary, deterministic truncation, default templates. | ADR-0001, ADR-0006 |
 | `kanban_task_threads/avatars.py` | Reads the local delivery manifest, validates the static origin plus global theme/palette, and maps event kinds to versioned PNG URLs. | ADR-0015 |
@@ -90,15 +90,18 @@ a hook kick collapses that wait.
   do not cross an unbound thread (ADR-0003). Empty dispatcher kicks cannot
   redirect the runtime to another profile; non-identity ContextVars still come
   from the latest attempt.
-  Secrets: `KANBAN_TASK_THREADS_WEBHOOK_URL`
-  (required; in production an `op://` reference resolved by the profile env,
-  never a literal) and `KANBAN_TASK_THREADS_BOT_TOKEN` (optional, ADR-0003 extras).
+  With absent `routes`, the legacy secret is `KANBAN_TASK_THREADS_WEBHOOK_URL`;
+  explicit routes instead resolve each route's `webhook_secret` name in the
+  same profile scope. `KANBAN_TASK_THREADS_BOT_TOKEN` is optional and shared
+  by every route in that profile (ADR-0003 extras); it is not a per-route
+  credential.
   Bot mode reuses or creates its eleven status tags and reconciles their
   managed emojis; automatic setup needs `MANAGE_CHANNELS` scoped to the forum,
   while thread mutation needs `MANAGE_THREADS`.
   If non-empty `publisher_profile` does not exactly match `ctx.profile_name`,
   registration returns inert before any of this; empty preserves ADR-0013.
-- **Startup classification**: a real config verdict (missing webhook in a
+- **Startup classification**: a real route-local config verdict (missing named
+  webhook in a
   populated scope, rejected credential, impossible tag policy, or Hermes not
   importable) logs once and exits until reload. A transient preflight or
   missing scope raises `RetryableStartup`; the thread refreshes the profile
@@ -217,13 +220,22 @@ posts  (board, task_id PK,                        -- one row per task ever seen
 leases (name PK, holder, expires_at, token)       -- fenced consume:<board>
 ```
 
-Location: `kanban_home()/kanban/plugins/kanban-task-threads/<board>.db` — the
-board-shared root, never `ctx.state`/`plugin-data`, which resolve per profile
-while the board is shared (ADR-0005's rationale). Rows are never deleted on
-"terminal" statuses: terminal is not final (ADR-0005), and tombstones/dead letters
-must survive reanimation. `posts.destination` records which webhook/forum a
+Location: exactly
+`kanban_home()/kanban/plugins/kanban-task-threads/threads-state.db` — one
+shared database with board-qualified `cursor` and `posts` rows, independent
+per-route connections, and normal WAL/SHM sidecars. It is never `ctx.state` or
+`plugin-data`, which resolve per profile while boards are shared (ADR-0005's
+rationale). It does not migrate, import, fall back to, modify, or delete old
+per-board state files. A fresh shared database cannot recover their Discord
+associations and may create new threads while processing existing history.
+Rows are never deleted on "terminal" statuses: terminal is not final
+(ADR-0005), and tombstones/dead letters must survive reanimation.
+`posts.destination` records which webhook/forum a
 post belongs to; a configured destination mismatch freezes publication rather
 than treating an unreachable old post as deletion.
+
+The shared database grows with cumulative task count. This change adds no
+retention policy and no duplicate event-history store.
 
 ## Hard-won platform facts
 
@@ -250,7 +262,7 @@ Things a fresh reader would otherwise lose an hour to:
 | Unit | `./scripts/sandbox test` | rendering, truncation, avatar catalog/assets/payloads, template rejection, store CAS/lease/fencing, consumer failure policy, profile pinning, tag provisioning/limits, bulk metadata parsing/repair/backoff, runtime lifecycle, startup classification, entry-point contract |
 | Runtime load | `./scripts/sandbox doctor` | `register()` loads in the real Hermes (8 hooks), offline |
 | End-to-end sans Discord | `./scripts/sandbox task && ./scripts/sandbox consume` | real event rows → one post, replies in order, durable cursor |
-| Live, bounded | `scripts/live_run.py` (explicit authorization each time) | the real consumer against the test forum: one pass, observe, stop. Run 2026-09-20: 1 post, 5 replies, 1 edit; second run silent. |
+| Live, bounded | `scripts/live_run.py` (explicit authorization each time) | an operator-run real-consumer check against a test forum; it is outside local validation and is not claimed by this contract. |
 
 ## Known limitations
 

@@ -15,11 +15,12 @@ tags:
   - kanban
   - notifications
   - visibility
-requires_env:
-  - name: KANBAN_TASK_THREADS_WEBHOOK_URL
-    description: Discord webhook bound to the forum channel the cards publish to
-    secret: true
 optional_env:
+  - name: KANBAN_TASK_THREADS_WEBHOOK_URL
+    description: >-
+      Legacy Discord webhook used only when routes is absent. Explicit routes
+      use their own profile-scoped webhook_secret values.
+    secret: true
   - name: KANBAN_TASK_THREADS_BOT_TOKEN
     description: >-
       Optional existing publisher bot token; role needs forum-scoped
@@ -40,6 +41,12 @@ config_schema:
     type: str
     default: ''
     description: Board this instance serves. Empty means the current board.
+  routes:
+    type: list
+    description: >-
+      Explicit board destinations. Each item requires selector: {board: slug}
+      and webhook_secret: a profile-scoped secret name. When omitted, use the
+      legacy board and KANBAN_TASK_THREADS_WEBHOOK_URL; an empty list publishes nothing.
   publisher_profile:
     type: str
     default: ''

@@ -23,7 +23,7 @@ even when it supersedes an old one.
 | [0007](0007-failure-policy.md) | Unknown creates are sacred; tombstones, dead letters, freezes, per-task backoff |
 | [0008](0008-institutional-card-actor-replies.md) | The card is the board speaking; replies are signed by the actual actor |
 | [0009](0009-thread-name-carries-the-task-id.md) | The frozen thread name carries the one stable key |
-| [0010](0010-single-forum-default.md) | One webhook, one forum, zero config — multi-forum routing parked |
+| [0010](0010-single-forum-default.md) | Legacy one-webhook default; explicit board routes support one destination per board |
 | [0011](0011-egress-allowlist.md) | The view is an egress allowlist; absence is the safe default |
 | [0012](0012-task-links-are-prerequisites.md) | `task_links` are prerequisites, not a hierarchy — the hub follows the real arrows |
 | [0013](0013-every-profile-is-a-candidate.md) | Every profile that loads the plugin is a lease candidate; the thread waits before it builds |
