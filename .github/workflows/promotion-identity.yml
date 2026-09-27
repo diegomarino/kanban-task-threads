@@ -1,0 +1,62 @@
+name: Promotion identity
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify-promotion-identity:
+    name: Promotion identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact promotion head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Prove promotion identity and candidate provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${HEAD_REPOSITORY}" = "${REPOSITORY}"
+          test "$(git rev-parse HEAD)" = "${HEAD_SHA}"
+          if [ "${HEAD_REF}" = "release-please--branches--main" ] && \
+             [ "${PR_AUTHOR}" = "github-actions[bot]" ]; then
+            echo "Exact Release Please PR identity accepted; Release metadata owns its diff checks."
+            exit 0
+          fi
+          if [ "${HEAD_REF}" != pre-release ]; then
+            echo "Only the pre-release promotion or Release Please may target main." >&2
+            exit 1
+          fi
+          CURRENT_SHA="$(gh api "repos/${REPOSITORY}/git/ref/heads/pre-release" --jq '.object.sha')"
+          test "${CURRENT_SHA}" = "${HEAD_SHA}"
+          # Wait for the exact candidate run to appear before checking its completed result.
+          CANDIDATE_RUN_ID=""
+          for _ in $(seq 1 60); do
+            CANDIDATE_RUN_ID="$(gh api "repos/${REPOSITORY}/actions/workflows/candidate.yml/runs?head_sha=${HEAD_SHA}&event=push&per_page=100" --paginate --slurp | jq -r '[.[] | .workflow_runs[] | select(.event == "push" and .name == "Release candidate")][0].id // empty')"
+            if [ -n "${CANDIDATE_RUN_ID}" ]; then
+              break
+            fi
+            sleep 10
+          done
+          if [ -z "${CANDIDATE_RUN_ID}" ]; then
+            echo "No Release candidate run appeared for ${HEAD_SHA}." >&2
+            exit 1
+          fi
+          gh run watch "${CANDIDATE_RUN_ID}" --exit-status
+          gh api "repos/${REPOSITORY}/actions/workflows/candidate.yml/runs?head_sha=${HEAD_SHA}&event=push&status=completed&per_page=100" --paginate --slurp | jq '[.[] | .workflow_runs[] | select(.event == "push" and .name == "Release candidate") | {headSha: .head_sha, conclusion: .conclusion}]' > candidate-runs.json
+          python3 scripts/ci/verify_candidate.py --runs-file candidate-runs.json --sha "${HEAD_SHA}"
+          git cat-file -e "${HEAD_SHA}:.github/workflows/candidate.yml"

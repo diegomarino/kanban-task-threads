@@ -1,7 +1,9 @@
 import json
+import os
 import re
 import subprocess
 import sys
+import textwrap
 import tomllib
 from pathlib import Path
 
@@ -31,6 +33,53 @@ def _job_permissions(workflow: str, job: str) -> dict[str, str]:
     match = re.search(r"(?ms)^    permissions:\s*\n(?P<body>(?:^      .*\n)+)", block)
     assert match is not None, f"missing permissions for job {job!r}"
     return dict(re.findall(r"(?m)^      ([a-z-]+): (read|write|none)\s*$", match.group("body")))
+
+
+def _integration_classifier() -> str:
+    workflow = (ROOT / ".github/workflows/pr-validation.yml").read_text()
+    match = re.search(
+        r"(?ms)^      - name: Classify integration-sensitive changes\n.*?^        run: \|\n"
+        r"(?P<script>(?:^          [^\n]*\n)+?)(?=^      - name:|^        if:|\Z)",
+        workflow,
+    )
+    assert match is not None, "missing integration classifier step"
+    return textwrap.dedent(match.group("script"))
+
+
+def _commit(repo: Path, relative_path: str, content: str, message: str) -> str:
+    path = repo / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    subprocess.run(["git", "add", relative_path], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", message], cwd=repo, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _history_with_change(tmp_path: Path, relative_path: str) -> tuple[Path, str, str]:
+    repo = tmp_path / "repository"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Workflow tests"], cwd=repo, check=True)
+    base = _commit(repo, "README.md", "base\n", "base")
+    head = _commit(repo, relative_path, "changed\n", "change")
+    return repo, base, head
+
+
+def _run_integration_classifier(
+    repo: Path, base: str, head: str
+) -> subprocess.CompletedProcess[str]:
+    output = repo / "github-output"
+    environment = os.environ | {"BASE_SHA": base, "HEAD_SHA": head, "GITHUB_OUTPUT": str(output)}
+    return subprocess.run(
+        ["bash", "-c", _integration_classifier()],
+        cwd=repo,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _public_versions(root: Path) -> dict[str, list[str]]:
@@ -82,32 +131,107 @@ def test_root_release_updates_every_public_version_surface():
 
 
 def test_ci_runs_on_integration_and_public_main_with_read_only_default_permissions():
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    workflow = (ROOT / ".github/workflows/candidate.yml").read_text()
     trigger = _top_level_block(workflow, "on")
     permissions = _top_level_block(workflow, "permissions")
 
     assert re.search(r"(?m)^  push:\s*$", trigger)
-    assert re.search(r"(?m)^    branches: \[pre-release, main\]\s*$", trigger)
-    assert re.search(r"(?m)^  pull_request:\s*$", trigger)
-    assert "workflow_dispatch:" not in trigger
+    assert re.search(r"(?m)^    branches: \[pre-release\]\s*$", trigger)
+    assert not re.search(r"(?m)^  pull_request:\s*$", trigger)
+    assert "workflow_dispatch:" in trigger
+    assert "hermes_ref:" in trigger
+    assert "required: true" in trigger
 
     parsed_permissions = dict(re.findall(r"(?m)^  ([a-z-]+): (read|write|none)\s*$", permissions))
     assert parsed_permissions == {"contents": "read"}
 
 
-def test_release_waits_for_every_validation_job_and_exports_release_identity():
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+def test_pr_validation_is_one_job_and_cancels_superseded_commits():
+    workflow = (ROOT / ".github/workflows/pr-validation.yml").read_text()
+    jobs = _top_level_block(workflow, "jobs")
+    concurrency = _top_level_block(workflow, "concurrency")
 
-    assert "needs: [pr-policy, quality, hermes-validate, plugin-scanner]" in workflow
-    assert "github.event_name == 'push'" in workflow
-    assert "github.ref == 'refs/heads/main'" in workflow
-    assert "id: release" in workflow
-    assert "googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071" in workflow
-    assert "token: ${{ secrets.GITHUB_TOKEN }}" in workflow
-    assert "config-file: release-please-config.json" in workflow
-    assert "manifest-file: .release-please-manifest.json" in workflow
+    assert set(re.findall(r"(?m)^  ([a-z0-9-]+):\s*$", jobs)) == {"validate"}
+    assert "group: pr-validation-${{ github.event.pull_request.number }}" in concurrency
+    assert "cancel-in-progress: true" in concurrency
+    assert "name: PR validation" in _job_block(workflow, "validate")
+
+
+def test_pr_validation_runs_the_canonical_fast_gate_once():
+    workflow = (ROOT / ".github/workflows/pr-validation.yml").read_text()
+    validate = _job_block(workflow, "validate")
+
+    assert validate.count("python3 scripts/check.py fast") == 1
+    assert "matrix:" not in _top_level_block(workflow, "jobs")
+
+
+def test_pr_validation_classifies_integration_surfaces_from_exact_base_and_head():
+    workflow = (ROOT / ".github/workflows/pr-validation.yml").read_text()
+    changes = _job_block(workflow, "validate")
+
+    assert "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in changes
+    assert "HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in changes
+    assert 'git cat-file -e "${BASE_SHA}^{commit}"' in changes
+    assert 'git diff --name-only "${BASE_SHA}" "${HEAD_SHA}"' in changes
+    assert 'if [ "${CHECKED_OUT_SHA}" != "${HEAD_SHA}" ]; then' in changes
+
+
+def test_integration_classifier_marks_workflow_only_changes(tmp_path: Path):
+    repo, base, head = _history_with_change(tmp_path, ".github/workflows/candidate.yml")
+
+    result = _run_integration_classifier(repo, base, head)
+
+    assert result.returncode == 0, result.stderr
+    assert (repo / "github-output").read_text() == "integration_changed=true\n"
+
+
+def test_integration_classifier_skips_docs_only_changes(tmp_path: Path):
+    repo, base, head = _history_with_change(tmp_path, "docs/testing.md")
+
+    result = _run_integration_classifier(repo, base, head)
+
+    assert result.returncode == 0, result.stderr
+    assert (repo / "github-output").read_text() == "integration_changed=false\n"
+
+
+def test_integration_classifier_fails_closed_for_missing_or_mismatched_pull_request_shas(
+    tmp_path: Path,
+):
+    repo, base, head = _history_with_change(tmp_path, "plugin.yaml")
+
+    missing_base = _run_integration_classifier(repo, "0" * 40, head)
+    mismatched_head = _run_integration_classifier(repo, base, base)
+
+    assert missing_base.returncode != 0
+    assert mismatched_head.returncode != 0
+
+
+def test_candidate_aggregates_every_expensive_validation_job():
+    workflow = (ROOT / ".github/workflows/candidate.yml").read_text()
+
+    aggregate = _job_block(workflow, "release-candidate")
+    assert "needs: [quality, hermes-validate, plugin-scanner]" in aggregate
+    assert "QUALITY_RESULT" in aggregate
+    assert "HERMES_RESULT" in aggregate
+    assert "SCANNER_RESULT" in aggregate
+    assert "release-please-action" not in workflow
+
+
+def test_release_workflow_preserves_release_please_public_contract():
+    workflow = (ROOT / ".github/workflows/release.yml").read_text()
+    trigger = _top_level_block(workflow, "on")
+    release = _job_block(workflow, "release-please")
+
+    assert re.search(r"(?m)^  push:\s*$", trigger)
+    assert re.search(r"(?m)^    branches: \[main\]\s*$", trigger)
+    assert "name: Release Please" in release
+    assert "needs: verify-main-provenance" in release
+    assert "googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071" in release
+    assert "token: ${{ secrets.GITHUB_TOKEN }}" in release
+    assert "config-file: release-please-config.json" in release
+    assert "manifest-file: .release-please-manifest.json" in release
     for output in ("release_created", "version", "sha", "tag_name"):
-        assert f"{output}: ${{{{ steps.release.outputs.{output} }}}}" in workflow
+        assert f"{output}: ${{{{ steps.release.outputs.{output} }}}}" in release
     assert _job_permissions(workflow, "release-please") == {
         "contents": "write",
         "issues": "write",
@@ -115,14 +239,39 @@ def test_release_waits_for_every_validation_job_and_exports_release_identity():
     }
 
 
+def test_release_stages_are_provenance_only_and_release_pr_is_allowlisted():
+    workflow = (ROOT / ".github/workflows/release.yml").read_text()
+    assert "strategy:" not in workflow
+    assert "hermes-agent" not in workflow
+    assert "ai-plugin-scanner" not in workflow
+    assert "python -m pytest" not in workflow
+    assert "verify_release.py release-only" in workflow
+    assert "verify_release.py versions" in workflow
+    assert "verify_candidate.py --runs-file" in workflow
+    assert "name: Release metadata" in workflow
+    assert "github.com/rhysd/actionlint/cmd/actionlint@v1.7.9" in workflow
+    assert "commits/${SHA}/pulls" in workflow
+    assert "BEFORE_SHA: ${{ github.event.before }}" in workflow
+    assert '--expected-first "${BEFORE_SHA}"' in workflow
+    assert '.head.ref == "release-please--branches--main"' in workflow
+    assert '.user.login == "github-actions[bot]"' in workflow
+    assert workflow.count(".merge_commit_sha == $merge") == 2
+    assert 'test "${RELEASE_PR_COUNT}" = 1' in workflow
+    assert '.head.ref == "pre-release"' in workflow
+    assert ".head.sha == $candidate" in workflow
+    assert 'test "${PROMOTION_PR_COUNT}" = 1' in workflow
+    assert "release-please-action" in _job_block(workflow, "release-please")
+
+
 def test_pre_release_opens_or_reuses_one_promotion_pr_after_validation():
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    workflow = (ROOT / ".github/workflows/candidate.yml").read_text()
     promotion = _job_block(workflow, "promotion-pr")
 
-    assert "needs: [pr-policy, quality, hermes-validate, plugin-scanner]" in promotion
+    assert "needs: release-candidate" in promotion
     assert "github.event_name == 'push'" in promotion
     assert "github.ref == 'refs/heads/pre-release'" in promotion
     assert _job_permissions(workflow, "promotion-pr") == {
+        "checks": "write",
         "contents": "read",
         "pull-requests": "write",
     }
@@ -139,6 +288,10 @@ def test_pre_release_opens_or_reuses_one_promotion_pr_after_validation():
     assert 'if [ "${OPEN_PR_COUNT}" -gt 1 ]; then' in promotion
     assert "gh pr edit" in promotion
     assert "gh pr create" in promotion
+    assert '"name": "Promotion identity"' in promotion
+    assert '"head_sha": $sha' in promotion
+    assert '"conclusion": "success"' in promotion
+    assert "repos/${GITHUB_REPOSITORY}/check-runs" in promotion
     assert "--base main" in promotion
     assert "--head pre-release" in promotion
     assert 'PROMOTION_TITLE="chore(release): promote pre-release to main"' in promotion
@@ -149,22 +302,30 @@ def test_pre_release_opens_or_reuses_one_promotion_pr_after_validation():
     assert "HERMES_CATALOG_TOKEN" not in promotion
 
 
-def test_main_pr_policy_allows_only_promotion_and_release_please():
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    policy = _job_block(workflow, "pr-policy")
+def test_promotion_identity_fails_closed_on_wrong_origin_or_candidate_data():
+    workflow = (ROOT / ".github/workflows/promotion-identity.yml").read_text()
+    identity = _job_block(workflow, "verify-promotion-identity")
 
-    assert "github.event.pull_request.base.ref" in policy
-    assert "github.event.pull_request.head.ref" in policy
-    assert "github.event.pull_request.head.repo.full_name" in policy
-    assert "github.event.pull_request.user.login" in policy
-    assert '"${HEAD_REF}" = "pre-release"' in policy
-    assert '"${HEAD_REF}" = "release-please--branches--main"' in policy
-    assert '"${PR_AUTHOR}" = "github-actions[bot]"' in policy
-    assert "Only the pre-release promotion or Release Please may target main" in policy
+    assert "actions: read" in workflow
+    assert "if: ${{" not in identity
+    assert "github.event.pull_request.head.repo.full_name" in identity
+    assert "github.event.pull_request.user.login" in identity
+    assert '"${HEAD_REF}" = "release-please--branches--main"' in identity
+    assert '"${PR_AUTHOR}" = "github-actions[bot]"' in identity
+    assert "Only the pre-release promotion or Release Please may target main" in identity
+    assert "git/ref/heads/pre-release" in identity
+    assert 'test "${CURRENT_SHA}" = "${HEAD_SHA}"' in identity
+    assert "actions/workflows/candidate.yml/runs?head_sha=${HEAD_SHA}&event=push" in identity
+    assert "Wait for the exact candidate run" in identity
+    assert "gh run watch" in identity
+    assert ".workflow_runs[]" in identity
+    assert '.event == "push"' in identity
+    assert "verify_candidate.py --runs-file candidate-runs.json --sha" in identity
+    assert 'git cat-file -e "${HEAD_SHA}:.github/workflows/candidate.yml"' in identity
 
 
 def test_catalog_pr_is_a_manual_main_only_workflow_with_a_scoped_credential():
-    ci_workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    ci_workflow = (ROOT / ".github/workflows/candidate.yml").read_text()
     workflow = (ROOT / ".github/workflows/sync-hermes-catalog.yml").read_text()
     trigger = _top_level_block(workflow, "on")
     catalog_job = _job_block(workflow, "sync-hermes-catalog")
@@ -184,6 +345,11 @@ def test_catalog_pr_is_a_manual_main_only_workflow_with_a_scoped_credential():
     assert catalog_job.count("persist-credentials: false") == 2
     assert "gh auth setup-git" in catalog_job
     assert "scripts/update_hermes_catalog.py" in workflow
+    assert "scripts/ci/catalog_handoff.py" in workflow
+    assert "--open-prs-file" in workflow
+    assert "--branch-prs-file" in workflow
+    assert "--remote-branch-file" in workflow
+    assert "--upstream-catalog-file" in workflow
     assert "python -m pip install pyyaml==6.0.2" in workflow
     assert "scripts/validate_plugin_catalog.py plugin-catalog/" in workflow
     assert "catalog/kanban-task-threads-v${RELEASE_VERSION}" in workflow
@@ -191,7 +357,7 @@ def test_catalog_pr_is_a_manual_main_only_workflow_with_a_scoped_credential():
     assert "--paginate --slurp" in workflow
     assert ".head.repo.full_name == $repo" in workflow
     assert ".head.ref | startswith($prefix)" in workflow
-    assert '"${OPEN_PLUGIN_PR_REF}" != "${CATALOG_BRANCH}"' in workflow
+    assert '--expected-branch "${CATALOG_BRANCH}"' in workflow
     assert 'git ls-remote --heads origin "refs/heads/${CATALOG_BRANCH}"' in workflow
     assert "gh pr list" not in workflow
     assert workflow.count("repos/${UPSTREAM_REPOSITORY}/pulls") == 3
@@ -199,10 +365,20 @@ def test_catalog_pr_is_a_manual_main_only_workflow_with_a_scoped_credential():
     assert workflow.count("-f state=all") == 2
     assert ".state | ascii_upcase" in workflow
     assert 'if .merged_at then "MERGED"' in workflow
-    assert '"${PR_STATE}" = "CLOSED"' in workflow
-    assert '"${PR_STATE}" = "MERGED"' in workflow
+    assert 'case "${ACTION}" in' in workflow
+    assert "already-merged)" in workflow
+    reuse = workflow.split("reuse)", 1)[1].split(";;", 1)[0]
+    assert 'git switch --detach "${REMOTE_SHA}"' in reuse
+    assert "scripts/update_hermes_catalog.py" in reuse
+    assert "git diff --exit-code" in reuse
+    assert "scripts/validate_plugin_catalog.py plugin-catalog/" in reuse
+    already_merged = workflow.split("already-merged)", 1)[1].split(";;", 1)[0]
+    assert "scripts/update_hermes_catalog.py" in already_merged
+    assert "git diff --exit-code" in already_merged
+    assert "scripts/validate_plugin_catalog.py plugin-catalog/" in already_merged
     assert 'git diff --name-only "${UPSTREAM_SHA}" "${REMOTE_SHA}"' in workflow
     assert '--force-with-lease="refs/heads/${CATALOG_BRANCH}:"' in workflow
+    assert "it will not retry an ambiguous push" in workflow
     assert "--draft" in workflow
     assert re.search(
         r"(?m)^      - name: Open the upstream catalog PR\n"

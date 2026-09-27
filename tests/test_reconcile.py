@@ -70,3 +70,64 @@ def test_recreate_drops_the_row_so_a_fresh_post_opens(db):
 def test_unknown_task_raises(db):
     with pytest.raises(reconcile.ReconcileError):
         reconcile.rearm(db, "default", "t_nope")
+
+
+def test_reconcile_only_changes_selected_board(tmp_path):
+    path = tmp_path / "state.db"
+    store = StateStore(path)
+    for board in ("fleet", "web"):
+        store.begin_create(board, "t_same", now=100)
+        store.complete_create(
+            board,
+            "t_same",
+            thread_id=f"{board}-thread",
+            message_id=f"{board}-message",
+            destination=f"discord:{board}",
+        )
+        store.mark_dead_letter(board, "t_same", "requires operator action")
+    store.close()
+
+    reconcile.rearm(path, "fleet", "t_same")
+
+    reopened = StateStore(path)
+    assert reopened.get_post("fleet", "t_same")["state"] == "live"
+    sibling = reopened.get_post("web", "t_same")
+    assert (sibling["state"], sibling["thread_id"], sibling["destination"]) == (
+        "dead_letter",
+        "web-thread",
+        "discord:web",
+    )
+    reopened.close()
+
+
+def test_cli_without_a_verb_prints_usage_and_returns_two(capsys):
+    assert reconcile.main([]) == 2
+    assert "Operator reconciliation" in capsys.readouterr().out
+
+
+def test_cli_attention_prints_empty_state_and_returns_zero(tmp_path, capsys):
+    path = tmp_path / "state.db"
+    StateStore(path)
+
+    assert reconcile.main([str(path), "attention"]) == 0
+    assert capsys.readouterr().out.strip() == "nothing needs an operator"
+
+
+def test_cli_attention_prints_actionable_rows(db, capsys):
+    assert reconcile.main([str(db), "attention"]) == 0
+    output = capsys.readouterr().out
+    assert "default:t_dead  [dead_letter]" in output
+    assert "default:t_pending  [pending-create]" in output
+
+
+def test_cli_rejects_unknown_verbs(db, capsys):
+    assert reconcile.main([str(db), "unknown", "default", "t_ok"]) == 2
+    assert "unknown verb 'unknown'" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("verb", ["clear", "adopt", "rearm", "recreate"])
+def test_cli_rejects_missing_arguments_without_a_traceback(db, verb, capsys):
+    assert reconcile.main([str(db), verb]) == 1
+    output = capsys.readouterr().out
+    assert output.startswith("reconcile:")
+    assert "Traceback" not in output

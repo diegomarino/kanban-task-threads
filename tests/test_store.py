@@ -5,12 +5,49 @@ semantics; replies remain at-least-once across a crash after send."""
 
 import pytest
 
-from kanban_task_threads.store import StateStore
+from kanban_task_threads.store import StateStore, state_db_path
 
 
 @pytest.fixture
 def store(tmp_path):
     return StateStore(tmp_path / "state.db")
+
+
+def test_shared_state_path(tmp_path):
+    assert state_db_path(tmp_path) == (
+        tmp_path / "kanban" / "plugins" / "kanban-task-threads" / "threads-state.db"
+    )
+
+
+def test_same_task_id_is_scoped_by_board(tmp_path):
+    path = state_db_path(tmp_path)
+    store = StateStore(path)
+    store.begin_create("fleet", "t_same", now=100)
+    store.complete_create(
+        "fleet", "t_same", thread_id="fleet-thread", message_id="fleet-message", destination="fleet"
+    )
+    store.begin_create("web", "t_same", now=100)
+    store.complete_create(
+        "web", "t_same", thread_id="web-thread", message_id="web-message", destination="web"
+    )
+    store.close()
+
+    reopened = StateStore(path)
+    assert reopened.get_post("fleet", "t_same")["destination"] == "fleet"
+    assert reopened.get_post("web", "t_same")["destination"] == "web"
+    reopened.close()
+
+
+def test_close_is_idempotent_and_reopening_retains_progress(tmp_path):
+    path = state_db_path(tmp_path)
+    store = StateStore(path)
+    assert store.advance_cursor("fleet", old=0, new=18) is True
+    store.close()
+    store.close()
+
+    reopened = StateStore(path)
+    assert reopened.get_cursor("fleet") == 18
+    reopened.close()
 
 
 # --- cursor -------------------------------------------------------------------

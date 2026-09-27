@@ -5,20 +5,33 @@ exercises the boundary being changed. Most checks run without agents,
 credentials or network access. Live Discord checks are a separate, explicit
 step.
 
+Before pushing, run `python3 scripts/check.py fast`. It runs the complete
+offline unit suite with branch coverage, Ruff, and actionlint. Run
+`python3 scripts/check.py full-local` for a publication candidate or an
+integration-surface change; it additionally loads the plugin through Hermes.
+GitHub repeats only external or platform-specific validation.
+
 ## Validation layers
 
 | Layer | Command | Requirements | Coverage |
 |---|---|---|---|
-| Unit | `./scripts/sandbox test` | uv | Rendering, transport payloads, SQLite state, leases, cursor handling, failure policy and runtime lifecycle |
+| Unit | `./scripts/sandbox test [path-or-pytest-args]` | uv | Focused pytest during development; rendering, transport payloads, SQLite state, leases, cursor handling, failure policy and runtime lifecycle |
+| Local gate | `python3 scripts/check.py fast` | uv, actionlint | Complete offline suite with branch coverage, Ruff, and workflow syntax |
 | Lint | `./scripts/sandbox lint` | uv | Ruff lint and formatting |
 | Runtime load | `./scripts/sandbox doctor` | Hermes | Registration through the real plugin loader, in a temporary home with sockets blocked |
 | Deferred startup | `path/to/hermes/python scripts/check_startup.py` | Hermes' Python interpreter | Profile scopes, hook-less startup, retry, unload and a local consumer pass |
 | Local event flow | `./scripts/sandbox up`, then `./scripts/sandbox task`, then `./scripts/sandbox consume` | Hermes | Real task events consumed through a console transport, with persistent local state |
 | Live delivery | `python3 scripts/live_run.py <sandbox-board.db>` | Dedicated test forum and credentials | One consumer pass through the real Discord transport |
+| Two-board live delivery | `python3 scripts/live_multi_board.py BOARD_A DB_A SECRET_A BOARD_B DB_B SECRET_B` | Two dedicated test forums and named `.env.local` credentials | One consumer pass per board through independent Discord transports |
 
 The unit and lint commands provision the tool versions pinned by the project.
 CI runs the Python version matrix, Hermes compatibility checks and public plugin
 scanner. Local checks do not establish that CI or live delivery has passed.
+
+Catalog publication remains a manual, protected-environment workflow. Its
+handoff state is covered offline by `./scripts/sandbox test tests/test_catalog_handoff.py -q`,
+including local bare-repository `--force-with-lease` rehearsals. These tests do
+not contact GitHub and do not establish fork token scope or catalog admission.
 
 ## Registration and deferred startup
 
@@ -96,3 +109,29 @@ determine where requests go.
 sandbox board using its separate state database, runs one pass and exits. It
 can create posts, edit cards and send replies. Do not include it in routine
 offline validation or run it against production boards or cursors.
+
+`live_multi_board.py` is the corresponding two-board acceptance probe. Its six
+arguments are two `board database webhook-secret-name` triples; both databases
+must already exist under this repository's `.sandbox/` directory. It resolves
+the two named values from `.env.local`, preflights both webhooks, rejects a
+shared discovered forum, then runs exactly one pass for each board with two
+independent consumers sharing only `.sandbox/live-multi-board-state.db`.
+
+For a two-board probe, the repository-root `.env.local` is ignored by Git and
+exists only for local development and live probes. It must contain only
+disposable test-forum credentials, never production credentials:
+
+```dotenv
+FLEET_WEBHOOK=<disposable-fleet-forum-webhook>
+WEB_WEBHOOK=<disposable-web-forum-webhook>
+KANBAN_TASK_THREADS_BOT_TOKEN=<optional-shared-test-bot-token>
+```
+
+Installed production operation resolves these named secrets from the selected
+publisher profile's secret scope, not the plugin-local `.env.local`.
+
+This probe can create forum posts, edit cards, send replies, and prepare forum
+status tags when the optional shared `KANBAN_TASK_THREADS_BOT_TOKEN` is set.
+Use two disposable forums and webhook credentials, never routine or production
+boards. Its output intentionally identifies board, secret name, forum channel,
+counts and thread links, but never credential values.

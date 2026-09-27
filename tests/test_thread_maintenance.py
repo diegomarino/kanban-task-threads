@@ -8,6 +8,7 @@ from conftest import FakeTransport, add_event, insert_task, make_board
 
 from kanban_task_threads.consumer import Consumer
 from kanban_task_threads.store import StateStore
+from kanban_task_threads.transport import TransportError
 
 NOW = 1_789_700_100
 BOT_CAPS = {"rich_card", "live_timestamps", "per_message_identity", "title_state", "tags"}
@@ -289,6 +290,27 @@ def test_audit_rechecks_the_fenced_lease_before_each_tasks_patches(board, tmp_pa
     assert any("lease lost during Discord metadata audit" in item for item in report.warnings)
 
 
+def test_lease_loss_before_metadata_audit_skips_every_bot_transport_call(board, tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    transport = FakeTransport(BOT_CAPS)
+    consumer = Consumer(
+        tmp_path / "kanban.db",
+        store,
+        transport,
+        board="default",
+        holder="bot",
+        guild_id="guild-9",
+    )
+    consumer._forum_prepared = True
+    consumer._next_metadata_audit_at = NOW
+    store.renew_lease = lambda *args, **kwargs: False
+
+    report = consumer.run_once(now=NOW)
+
+    assert transport.calls == []
+    assert "lease lost before Discord metadata audit" in report.warnings
+
+
 def test_audit_skips_posts_frozen_to_another_webhook_in_the_same_forum(board, tmp_path):
     store = StateStore(tmp_path / "state.db")
     transport = FakeTransport(BOT_CAPS)
@@ -396,6 +418,23 @@ def test_audit_429_honors_retry_after_without_blocking_event_consumption(board, 
     assert len(transport.ops("list_forum_threads")) == 2
 
 
+def test_audit_malformed_retry_after_falls_back_to_one_second(board, tmp_path):
+    store, transport, consumer = build(tmp_path, BOT_CAPS, guild_id="guild-9")
+    insert_task(board, "t_1", status="todo")
+    add_event(board, "t_1", "created", {"status": "todo"})
+    transport.queue_error(
+        "list_forum_threads", TransportError(429, {"retry_after": "not-a-number"})
+    )
+
+    report = consumer.run_once(now=NOW)
+
+    assert any("metadata audit rate limited" in warning for warning in report.warnings)
+    consumer.run_once(now=NOW)
+    assert len(transport.ops("list_forum_threads")) == 1
+    consumer.run_once(now=NOW + 1)
+    assert len(transport.ops("list_forum_threads")) == 2
+
+
 def test_audit_retry_after_starts_when_the_rate_limit_response_arrives(
     board, tmp_path, monkeypatch
 ):
@@ -448,6 +487,42 @@ def test_failed_maintenance_is_retried_via_the_dirty_card(board, tmp_path):
     consumer.run_once(now=NOW + 10)  # no new events: dirty repaint retries
     assert [c[2] for c in transport.ops("set_status_tag")] == ["done", "done"]
     assert [c[2] for c in transport.ops("set_archived")] == [True]
+
+
+def test_unexpected_maintenance_error_leaves_card_dirty(board, tmp_path):
+    class ExplodingTransport(FakeTransport):
+        def set_status_tag(self, ref, name):
+            raise RuntimeError("unexpected maintenance failure")
+
+    store = StateStore(tmp_path / "state.db")
+    transport = ExplodingTransport(BOT_CAPS)
+    consumer = Consumer(tmp_path / "kanban.db", store, transport, board="default", holder="p1")
+    insert_task(board, "t_1", status="done")
+    add_event(board, "t_1", "created", {"status": "ready"})
+
+    report = consumer.run_once(now=NOW)
+
+    assert any("thread maintenance failed" in warning for warning in report.warnings)
+    assert store.get_post("default", "t_1")["card_dirty"] == 1
+
+
+def test_unexpected_repaint_error_leaves_card_dirty(board, tmp_path):
+    class ExplodingTransport(FakeTransport):
+        def edit_card(self, ref, card):
+            raise RuntimeError("unexpected repaint failure")
+
+    store = StateStore(tmp_path / "state.db")
+    transport = ExplodingTransport()
+    consumer = Consumer(tmp_path / "kanban.db", store, transport, board="default", holder="p1")
+    insert_task(board, "t_1", status="running")
+    add_event(board, "t_1", "created", {"status": "ready"})
+    consumer.run_once(now=NOW)
+    store.set_card_dirty("default", "t_1", True)
+
+    report = consumer.run_once(now=NOW + 10)
+
+    assert any("card repaint failed" in warning for warning in report.warnings)
+    assert store.get_post("default", "t_1")["card_dirty"] == 1
 
 
 def test_reverting_to_ready_replaces_the_terminal_tag(board, tmp_path):

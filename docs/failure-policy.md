@@ -5,6 +5,12 @@ guarantees the plugin never *loses* an event. What happens when Discord
 misbehaves is decided case by case in `consumer.py`, and none of it is
 configurable — this is correctness, not taste (ADR-0007, ADR-0006).
 
+With explicit `routes`, this policy applies independently to each board route.
+Each consumer has its own `consume:<board>` lease and retry state while sharing
+the board-qualified tables in `threads-state.db`; a bad named secret, failed
+preflight, or retrying route does not stop healthy routes in the same publisher
+profile. `routes: []` has no consumers and therefore no publication failures.
+
 ## The create protocol: unknown outcomes are sacred
 
 Opening a forum post is the one non-idempotent operation: a blind retry can
@@ -63,8 +69,9 @@ on success.
 - **Freeze** (destination mismatch): the *operator* re-pointed the plugin at a
   different webhook/forum while the state DB still maps tasks to the old one.
   Publishing would 404 against ids the new webhook cannot address and be
-  mistaken for deletion — so the task is skipped with an explicit "migrate or
-  clear" error instead. An operational migration must never be punished as if
+  mistaken for deletion — so the task is skipped with an explicit error
+  instead. The plugin does not migrate or import old per-board state as a
+  fallback; an operational destination change must never be punished as if
   someone deleted the post.
 
 None of the three delete anything: terminal is not final on this board
@@ -74,7 +81,15 @@ rows are kept as compact records, never pruned on "terminal".
 ## The operator's verbs (`kanban_task_threads/reconcile.py`)
 
 Everything the policy defers to a human is operable without hand-written SQL,
-via `scripts/reconcile.py <state.db> …` (in development: `sandbox reconcile`):
+via the shared database path (in development: `sandbox reconcile`):
+
+```bash
+scripts/reconcile.py <kanban_home>/kanban/plugins/kanban-task-threads/threads-state.db attention
+scripts/reconcile.py <kanban_home>/kanban/plugins/kanban-task-threads/threads-state.db rearm <board> <task_id>
+```
+
+`attention` covers all boards; every mutating verb requires the board-qualified
+`<board> <task_id>` arguments:
 
 | Verb | For | Effect |
 |---|---|---|

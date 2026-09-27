@@ -145,6 +145,10 @@ class Consumer:
         self._metadata_audit_level = 0
         self._forum_prepared = False
 
+    def close(self) -> None:
+        """Release the state connection owned by this consumer."""
+        self._store.close()
+
     def run_once(self, now: int | None = None) -> Report:
         """One full pass: acquire the fenced lease, scan events past the board
         cursor, publish per task, sweep stale/recovered heartbeats, repaint
