@@ -119,7 +119,7 @@ def test_public_tree_excludes_agent_controls_and_private_development_context():
 
 def test_ci_pins_tools_and_runs_catalog_gates():
     workflow = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
-    assert 'python-version: ["3.11", "3.13"]' in workflow
+    assert 'python-version: ["3.11", "3.13", "3.14"]' in workflow
     assert re.search(r"\bpytest==\d+\.\d+\.\d+\b", workflow)
     assert re.search(r"\bruff==\d+\.\d+\.\d+\b", workflow)
     assert "repository: NousResearch/hermes-agent" in workflow
@@ -204,7 +204,7 @@ def test_local_quality_tools_match_ci_pins():
 
 def test_candidate_gate_has_only_the_planned_expensive_jobs():
     workflow = (ROOT / ".github" / "workflows" / "candidate.yml").read_text()
-    assert workflow.count('python-version: ["3.11", "3.13"]') == 1
+    assert workflow.count('python-version: ["3.11", "3.13", "3.14"]') == 1
     assert workflow.count("hermes-ref:") == 1
     assert workflow.count("min_score: 80") == 1
     assert "release-candidate:" in workflow
